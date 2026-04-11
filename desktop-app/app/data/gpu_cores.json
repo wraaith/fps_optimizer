@@ -1,0 +1,305 @@
+{
+  "gpus": [
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4090",
+      "core_type": "CUDA Cores",
+      "core_count": 16384
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4080 Super",
+      "core_type": "CUDA Cores",
+      "core_count": 10240
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4080",
+      "core_type": "CUDA Cores",
+      "core_count": 9728
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4070 Ti Super",
+      "core_type": "CUDA Cores",
+      "core_count": 8448
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4070 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 7680
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4070 Super",
+      "core_type": "CUDA Cores",
+      "core_count": 7168
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4070",
+      "core_type": "CUDA Cores",
+      "core_count": 5888
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4060 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 4352
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 4060",
+      "core_type": "CUDA Cores",
+      "core_count": 3072
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3090 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 10752
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3090",
+      "core_type": "CUDA Cores",
+      "core_count": 10496
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3080 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 10240
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3080",
+      "core_type": "CUDA Cores",
+      "core_count": 8704
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3070 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 6144
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3070",
+      "core_type": "CUDA Cores",
+      "core_count": 5888
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3060 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 4864
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 3060",
+      "core_type": "CUDA Cores",
+      "core_count": 3584
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 2080 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 4352
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 2080 Super",
+      "core_type": "CUDA Cores",
+      "core_count": 3072
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce RTX 2070 Super",
+      "core_type": "CUDA Cores",
+      "core_count": 2560
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce GTX 1080 Ti",
+      "core_type": "CUDA Cores",
+      "core_count": 3584
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce GTX 1080",
+      "core_type": "CUDA Cores",
+      "core_count": 2560
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce GTX 1070",
+      "core_type": "CUDA Cores",
+      "core_count": 1920
+    },
+    {
+      "manufacturer": "NVIDIA",
+      "model": "GeForce GTX 1060 (6GB)",
+      "core_type": "CUDA Cores",
+      "core_count": 1280
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 7900 XTX",
+      "core_type": "Stream Processors",
+      "core_count": 6144
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 7900 XT",
+      "core_type": "Stream Processors",
+      "core_count": 5376
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 7900 GRE",
+      "core_type": "Stream Processors",
+      "core_count": 5120
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 7800 XT",
+      "core_type": "Stream Processors",
+      "core_count": 3840
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 7700 XT",
+      "core_type": "Stream Processors",
+      "core_count": 3456
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 7600 XT",
+      "core_type": "Stream Processors",
+      "core_count": 2048
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 7600",
+      "core_type": "Stream Processors",
+      "core_count": 2048
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6950 XT",
+      "core_type": "Stream Processors",
+      "core_count": 5120
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6900 XT",
+      "core_type": "Stream Processors",
+      "core_count": 5120
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6800 XT",
+      "core_type": "Stream Processors",
+      "core_count": 4608
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6800",
+      "core_type": "Stream Processors",
+      "core_count": 3840
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6750 XT",
+      "core_type": "Stream Processors",
+      "core_count": 2560
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6700 XT",
+      "core_type": "Stream Processors",
+      "core_count": 2560
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6650 XT",
+      "core_type": "Stream Processors",
+      "core_count": 2048
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6600 XT",
+      "core_type": "Stream Processors",
+      "core_count": 2048
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 6600",
+      "core_type": "Stream Processors",
+      "core_count": 1792
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 5700 XT",
+      "core_type": "Stream Processors",
+      "core_count": 2560
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 5700",
+      "core_type": "Stream Processors",
+      "core_count": 2304
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 5600 XT",
+      "core_type": "Stream Processors",
+      "core_count": 2304
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 580",
+      "core_type": "Stream Processors",
+      "core_count": 2304
+    },
+    {
+      "manufacturer": "AMD",
+      "model": "Radeon RX 570",
+      "core_type": "Stream Processors",
+      "core_count": 2048
+    },
+    {
+      "manufacturer": "Intel",
+      "model": "Arc A770",
+      "core_type": "ALUs / Shading Units",
+      "core_count": 4096
+    },
+    {
+      "manufacturer": "Intel",
+      "model": "Arc A750",
+      "core_type": "ALUs / Shading Units",
+      "core_count": 3584
+    },
+    {
+      "manufacturer": "Intel",
+      "model": "Arc A580",
+      "core_type": "ALUs / Shading Units",
+      "core_count": 3072
+    },
+    {
+      "manufacturer": "Intel",
+      "model": "Arc A380",
+      "core_type": "ALUs / Shading Units",
+      "core_count": 1024
+    },
+    {
+       "manufacturer": "Intel",
+       "model": "UHD Graphics",
+       "core_type": "Execution Units",
+       "core_count": 24
+    }
+
+  ]
+}
