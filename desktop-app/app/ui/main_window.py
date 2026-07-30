@@ -1,5 +1,11 @@
+import subprocess
+import sys
+import os
+
 import customtkinter as ctk
 from ui.scan_view import ScanView
+from ui.overlay_settings_window import OverlaySettingsWindow
+
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -17,7 +23,24 @@ class MainWindow(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Sidebar
+        self._overlay_proc = None
+        self._overlay_settings_window = None
+
+        self.overlay_settings = {
+            "text_color": "#00ff00",
+            "bg_mode": "transparent",
+            "bg_opacity": 0.35,
+            "font_size": 18,
+            "scale": 1.0,
+            "position": "top-right",
+            "click_through": True,
+            "show_fps": True,
+            "show_gpu": True,
+            "show_cpu": True,
+            "show_ram": True,
+        }
+
+        # ── Sidebar ─────────────────────────────────────────────
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 10), pady=0)
 
@@ -43,16 +66,54 @@ class MainWindow(ctk.CTk):
         )
         self.history_button.pack(pady=8, padx=10, fill="x")
 
-        # Main content area
+        self.overlay_settings_btn = ctk.CTkButton(
+            self.sidebar,
+            text="Overlay Settings",
+            command=self.open_overlay_settings
+        )
+        self.overlay_settings_btn.pack(pady=8, padx=10, fill="x")
+
+        spacer = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        spacer.pack(fill="both", expand=True)
+
+        self._overlay_status = ctk.CTkLabel(
+            self.sidebar,
+            text="Overlay: OFF",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        self._overlay_status.pack(pady=(0, 4), padx=10)
+
+        self.overlay_btn = ctk.CTkButton(
+            self.sidebar,
+            text="▶  Start Overlay",
+            fg_color="#1a7a3a",
+            hover_color="#15602e",
+            command=self._toggle_overlay
+        )
+        self.overlay_btn.pack(pady=(0, 10), padx=10, fill="x")
+
+        self.close_btn = ctk.CTkButton(
+            self.sidebar,
+            text="✕  Close App",
+            fg_color="#8b1a1a",
+            hover_color="#6b1414",
+            command=self._close_app
+        )
+        self.close_btn.pack(pady=(0, 16), padx=10, fill="x")
+
+        # ── Main content area ──────────────────────────────────
         self.main_frame = ctk.CTkFrame(self)
         self.main_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
         self.main_frame.grid_columnconfigure(0, weight=1)
         self.main_frame.grid_rowconfigure(0, weight=1)
 
         self.current_view = None
-
-        # Show welcome screen by default
         self._show_welcome()
+
+        self.protocol("WM_DELETE_WINDOW", self._close_app)
+
+    # ── View switching ──────────────────────────────────────────
 
     def _clear_main(self):
         for widget in self.main_frame.winfo_children():
@@ -91,3 +152,111 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(size=16)
         )
         label.grid(row=0, column=0, padx=20, pady=20)
+
+    # ── Overlay settings popup ─────────────────────────────────
+
+    def open_overlay_settings(self):
+        if self._overlay_settings_window is None or not self._overlay_settings_window.winfo_exists():
+            self._overlay_settings_window = OverlaySettingsWindow(
+                parent=self,
+                initial_settings=self.overlay_settings,
+                on_apply=self.apply_overlay_settings
+            )
+            self._overlay_settings_window.after(100, self._overlay_settings_window.lift)
+        else:
+            self._overlay_settings_window.focus()
+            self._overlay_settings_window.lift()
+
+    def apply_overlay_settings(self, settings: dict):
+        self.overlay_settings = settings
+
+        if self._is_overlay_running():
+            self._overlay_status.configure(
+                text="Overlay: ON (restart to apply)",
+                text_color="#f5c542"
+            )
+        else:
+            self._overlay_status.configure(
+                text="Overlay settings saved",
+                text_color="#4fc3f7"
+            )
+
+    # ── Overlay management ──────────────────────────────────────
+
+    def _is_overlay_running(self) -> bool:
+        return self._overlay_proc is not None and self._overlay_proc.poll() is None
+
+    def _toggle_overlay(self):
+        if self._is_overlay_running():
+            self._stop_overlay()
+        else:
+            self._start_overlay()
+
+    def _start_overlay(self):
+        if self._is_overlay_running():
+            return
+
+        main_py = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "main.py"
+        )
+
+        try:
+            env = os.environ.copy()
+            env["FPS_OVERLAY_TEXT_COLOR"] = self.overlay_settings["text_color"]
+            env["FPS_OVERLAY_BG_MODE"] = self.overlay_settings["bg_mode"]
+            env["FPS_OVERLAY_BG_OPACITY"] = str(self.overlay_settings["bg_opacity"])
+            env["FPS_OVERLAY_FONT_SIZE"] = str(self.overlay_settings["font_size"])
+            env["FPS_OVERLAY_SCALE"] = str(self.overlay_settings["scale"])
+            env["FPS_OVERLAY_POSITION"] = self.overlay_settings["position"]
+            env["FPS_OVERLAY_CLICK_THROUGH"] = str(self.overlay_settings["click_through"])
+            env["FPS_OVERLAY_SHOW_FPS"] = str(self.overlay_settings["show_fps"])
+            env["FPS_OVERLAY_SHOW_GPU"] = str(self.overlay_settings["show_gpu"])
+            env["FPS_OVERLAY_SHOW_CPU"] = str(self.overlay_settings["show_cpu"])
+            env["FPS_OVERLAY_SHOW_RAM"] = str(self.overlay_settings["show_ram"])
+
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = subprocess.CREATE_NO_WINDOW
+
+            self._overlay_proc = subprocess.Popen(
+                [sys.executable, main_py, "--overlay"],
+                creationflags=creationflags,
+                env=env
+            )
+
+            self.overlay_btn.configure(
+                text="■  Stop Overlay",
+                fg_color="#8b6914",
+                hover_color="#6b5010"
+            )
+            self._overlay_status.configure(text="Overlay: ON", text_color="#00e676")
+
+        except Exception as e:
+            self._overlay_status.configure(
+                text=f"Error: {e}",
+                text_color="red"
+            )
+
+    def _stop_overlay(self):
+        if self._overlay_proc is not None:
+            try:
+                self._overlay_proc.terminate()
+                self._overlay_proc.wait(timeout=3)
+            except Exception:
+                try:
+                    self._overlay_proc.kill()
+                except Exception:
+                    pass
+            self._overlay_proc = None
+
+        self.overlay_btn.configure(
+            text="▶  Start Overlay",
+            fg_color="#1a7a3a",
+            hover_color="#15602e"
+        )
+        self._overlay_status.configure(text="Overlay: OFF", text_color="gray")
+
+    def _close_app(self):
+        self._stop_overlay()
+        self.destroy()
