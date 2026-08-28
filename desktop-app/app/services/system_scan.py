@@ -30,7 +30,7 @@ try:
 except ImportError:
     winreg = None
 
-from .gpu_db import lookup_gpu
+from .hardware_db import lookup_gpu, lookup_cpu
 
 # Keywords that identify integrated GPUs (should be deprioritized)
 _INTEGRATED_GPU_KEYWORDS = (
@@ -52,6 +52,19 @@ def _get_cpu_name() -> str:
         except Exception:
             pass
     return platform.processor() or "Unknown"
+
+def get_live_cpu_power_wmi() -> Optional[float]:
+    """Universal real-time CPU power draw via OpenHardwareMonitor WMI namespace."""
+    if _wmi_mod is None:
+        return None
+    try:
+        w = _wmi_mod.WMI(namespace="root\\OpenHardwareMonitor")
+        sensors = w.Sensor()
+        for sensor in sensors:
+            if sensor.SensorType == "Power" and "CPU Total" in sensor.Name:
+                return round(float(sensor.Value), 1)
+    except Exception:
+        return None
 
 
 # ── GPU helpers ─────────────────────────────────────────────────
@@ -84,6 +97,18 @@ def _get_nvidia_smi_vram(gpu_name: str) -> Optional[float]:
     except Exception:
         pass
     return None
+
+def get_live_gpu_power() -> Optional[float]:
+    """Universal real-time GPU power draw via NVML (NVIDIA)."""
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        # Returns power in milliwatts, divide by 1000 for exact live Watts
+        power_mw = pynvml.nvmlDeviceGetPowerUsage(handle)
+        return round(power_mw / 1000.0, 1)
+    except Exception:
+        return None # Fallback if non-NVIDIA or driver missing
 
 
 def _read_vram_from_registry(adapter_string: str) -> Optional[float]:
@@ -123,17 +148,24 @@ def _get_gpu_info() -> Dict[str, Any]:
     vram_gb: Optional[float] = None
     cores: Optional[int] = None
     core_type: Optional[str] = None
+    series: Optional[str] = None
+    bandwidth_gbs: Optional[float] = None
+    gpu_tdp_w: Optional[int] = None
 
     if _wmi_mod is None:
         return {"name": name, "vram_gb": vram_gb,
-                "cores": cores, "core_type": core_type}
+                "cores": cores, "core_type": core_type,
+                "series": series, "bandwidth_gbs": bandwidth_gbs,
+                "tdp_w": gpu_tdp_w}
 
     try:
         c = _wmi_mod.WMI()
         gpus = c.Win32_VideoController()
         if not gpus:
             return {"name": name, "vram_gb": vram_gb,
-                    "cores": cores, "core_type": core_type}
+                    "cores": cores, "core_type": core_type,
+                    "series": series, "bandwidth_gbs": bandwidth_gbs,
+                    "tdp_w": gpu_tdp_w}
 
         # Prefer a dedicated GPU over an integrated one
         gpu = gpus[0]
@@ -163,7 +195,23 @@ def _get_gpu_info() -> Dict[str, Any]:
             except (ValueError, TypeError):
                 pass
 
-        cores, core_type = lookup_gpu(name)
+        # Look up enriched specs from the hardware database
+        gpu_specs = lookup_gpu(name)
+        cores = gpu_specs["cores"]
+        core_type = gpu_specs["core_type"]
+        series = gpu_specs["series"]
+        bandwidth_gbs = gpu_specs["bandwidth_gbs"]
+        
+        # Override database TDP with real-time hardware telemetry if available
+        live_power = get_live_gpu_power()
+        if live_power is not None:
+            gpu_tdp_w = live_power
+        else:
+            gpu_tdp_w = gpu_specs["tdp_w"]
+
+        # Use DB VRAM as fallback if detection failed
+        if vram_gb is None and gpu_specs["vram_gb"] is not None:
+            vram_gb = gpu_specs["vram_gb"]
 
     except Exception:
         pass
@@ -173,6 +221,9 @@ def _get_gpu_info() -> Dict[str, Any]:
         "vram_gb": vram_gb,
         "cores": cores,
         "core_type": core_type,
+        "series": series,
+        "bandwidth_gbs": bandwidth_gbs,
+        "tdp_w": gpu_tdp_w,
     }
 
 
@@ -229,6 +280,20 @@ def run_system_scan() -> Dict[str, Any]:
         cpu_physical = 0
         cpu_usage = 0.0
 
+    # Enrich CPU data from the hardware database
+    try:
+        cpu_db = lookup_cpu(cpu_name)
+        cpu_threads = cpu_db["threads"] or cpu_logical
+        
+        live_power = get_live_cpu_power_wmi()
+        if live_power is not None:
+            cpu_tdp_w = live_power
+        else:
+            cpu_tdp_w = cpu_db["tdp_w"]
+    except Exception:
+        cpu_threads = cpu_logical
+        cpu_tdp_w = None
+
     # RAM
     try:
         vm = psutil.virtual_memory()
@@ -243,7 +308,9 @@ def run_system_scan() -> Dict[str, Any]:
         gpu_info = _get_gpu_info()
     except Exception:
         gpu_info = {"name": "Unknown", "vram_gb": None,
-                    "cores": None, "core_type": None}
+                    "cores": None, "core_type": None,
+                    "series": None, "bandwidth_gbs": None,
+                    "tdp_w": None}
 
     # OS
     try:
@@ -252,11 +319,26 @@ def run_system_scan() -> Dict[str, Any]:
         os_info = {"name": platform.system(), "release": platform.release(),
                    "version": platform.version()}
 
+    # Calculate total system TDP
+    total_tdp_w = None
+    if cpu_tdp_w is not None and gpu_info.get("tdp_w") is not None:
+        total_tdp_w = cpu_tdp_w + gpu_info["tdp_w"]
+
+    # Calculate bottleneck score (CPU cores / GPU VRAM ratio)
+    bottleneck_score = None
+    if (cpu_physical and cpu_physical > 0 and
+            gpu_info.get("vram_gb") and gpu_info["vram_gb"] > 0):
+        bottleneck_score = round(
+            gpu_info["vram_gb"] / cpu_physical, 2
+        )
+
     result = {
         "cpu": {
             "name": cpu_name,
             "logical_cores": cpu_logical,
             "physical_cores": cpu_physical,
+            "threads": cpu_threads,
+            "tdp_w": cpu_tdp_w,
             "usage_percent": cpu_usage,
         },
         "ram": {
@@ -265,6 +347,10 @@ def run_system_scan() -> Dict[str, Any]:
         },
         "gpu": gpu_info,
         "os": os_info,
+        "system": {
+            "total_tdp_w": total_tdp_w,
+            "bottleneck_score": bottleneck_score,
+        },
     }
 
     # Release COM for this thread

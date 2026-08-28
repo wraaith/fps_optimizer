@@ -22,6 +22,7 @@ class ScanView(ctk.CTkFrame):
         super().__init__(parent, **kwargs)
 
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
         # Title
         self.title = ctk.CTkLabel(
@@ -38,9 +39,9 @@ class ScanView(ctk.CTkFrame):
         )
         self.scan_btn.grid(row=1, column=0, pady=(0, 20))
 
-        # Results frame
-        self.results_frame = ctk.CTkFrame(self)
-        self.results_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
+        # Scrollable results frame
+        self.results_frame = ctk.CTkScrollableFrame(self)
+        self.results_frame.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
         self.results_frame.grid_columnconfigure(0, weight=1)
 
         # Placeholder label
@@ -71,13 +72,6 @@ class ScanView(ctk.CTkFrame):
         thread.start()
 
     def _display_results(self, data: dict):
-        # DEBUG: print raw scan data to console
-        import json
-        print("=" * 50)
-        print("SCAN DATA RECEIVED BY UI:")
-        print(json.dumps(data, indent=2, default=str))
-        print("=" * 50)
-
         # Clear previous results
         for widget in self.results_frame.winfo_children():
             widget.destroy()
@@ -86,6 +80,7 @@ class ScanView(ctk.CTkFrame):
         ram = data.get("ram", {})
         gpu = data.get("gpu", {})
         os_info = data.get("os", {})
+        system = data.get("system", {})
 
         # Build display rows with safe formatting
         os_name = _safe(os_info.get("name"), fallback="")
@@ -100,6 +95,12 @@ class ScanView(ctk.CTkFrame):
             cores_display = f"{logi} Logical"
         else:
             cores_display = "Unknown"
+
+        cpu_threads = cpu.get("threads")
+        threads_display = str(cpu_threads) if cpu_threads else "Unknown"
+
+        cpu_tdp = cpu.get("tdp_w")
+        cpu_tdp_display = f"{cpu_tdp} W" if cpu_tdp is not None else "Unknown"
 
         cpu_usage = cpu.get("usage_percent")
         cpu_usage_display = f"{cpu_usage}%" if cpu_usage is not None else "N/A"
@@ -119,31 +120,78 @@ class ScanView(ctk.CTkFrame):
         else:
             gpu_cores_display = "Unknown"
 
-        rows = [
-            ("OS",        os_display),
-            ("CPU",       _safe(cpu.get("name"))),
-            ("CPU Cores", cores_display),
-            ("CPU Usage", cpu_usage_display),
-            ("RAM Total", f"{ram_total} GB" if ram_total is not None else "Unknown"),
-            ("RAM Used",  f"{ram_used} GB" if ram_used is not None else "Unknown"),
-            ("GPU",       _safe(gpu.get("name"))),
-            ("VRAM",      vram_display),
-            ("GPU Cores", gpu_cores_display),
+        gpu_series = gpu.get("series")
+        gpu_series_display = gpu_series if gpu_series else "Unknown"
+
+        gpu_bw = gpu.get("bandwidth_gbs")
+        gpu_bw_display = f"{gpu_bw} GB/s" if gpu_bw is not None else "Unknown"
+
+        gpu_tdp = gpu.get("tdp_w")
+        gpu_tdp_display = f"{gpu_tdp} W" if gpu_tdp is not None else "Unknown"
+
+        total_tdp = system.get("total_tdp_w")
+        total_tdp_display = f"{total_tdp} W" if total_tdp is not None else "Unknown"
+
+        bottleneck = system.get("bottleneck_score")
+        bottleneck_display = str(bottleneck) if bottleneck is not None else "N/A"
+
+        # ── Section headers and rows ────────────────────────────
+        sections = [
+            ("── System ──", [
+                ("OS", os_display),
+            ]),
+            ("── CPU ──", [
+                ("CPU",          _safe(cpu.get("name"))),
+                ("CPU Cores",    cores_display),
+                ("CPU Threads",  threads_display),
+                ("CPU TDP",      cpu_tdp_display),
+                ("CPU Usage",    cpu_usage_display),
+            ]),
+            ("── Memory ──", [
+                ("RAM Total", f"{ram_total} GB" if ram_total is not None else "Unknown"),
+                ("RAM Used",  f"{ram_used} GB" if ram_used is not None else "Unknown"),
+            ]),
+            ("── GPU ──", [
+                ("GPU",           _safe(gpu.get("name"))),
+                ("GPU Series",    gpu_series_display),
+                ("VRAM",          vram_display),
+                ("GPU Cores",     gpu_cores_display),
+                ("GPU Bandwidth", gpu_bw_display),
+                ("GPU TDP",       gpu_tdp_display),
+            ]),
+            ("── Power ──", [
+                ("Total System TDP", total_tdp_display),
+                ("Bottleneck Score", bottleneck_display),
+            ]),
         ]
 
-        for i, (label, value) in enumerate(rows):
+        row_idx = 0
+        for section_title, rows in sections:
+            # Section header
             ctk.CTkLabel(
                 self.results_frame,
-                text=label + ":",
-                font=ctk.CTkFont(weight="bold"),
+                text=section_title,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color="#4fc3f7",
                 anchor="w"
-            ).grid(row=i, column=0, padx=(20, 5), pady=4, sticky="w")
+            ).grid(row=row_idx, column=0, columnspan=2,
+                   padx=20, pady=(12, 4), sticky="w")
+            row_idx += 1
 
-            ctk.CTkLabel(
-                self.results_frame,
-                text=value,
-                anchor="w"
-            ).grid(row=i, column=1, padx=(5, 20), pady=4, sticky="w")
+            for label, value in rows:
+                ctk.CTkLabel(
+                    self.results_frame,
+                    text=label + ":",
+                    font=ctk.CTkFont(weight="bold"),
+                    anchor="w"
+                ).grid(row=row_idx, column=0, padx=(20, 5), pady=3, sticky="w")
+
+                ctk.CTkLabel(
+                    self.results_frame,
+                    text=value,
+                    anchor="w"
+                ).grid(row=row_idx, column=1, padx=(5, 20), pady=3, sticky="w")
+                row_idx += 1
 
         self.results_frame.grid_columnconfigure(1, weight=1)
 

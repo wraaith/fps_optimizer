@@ -4,7 +4,7 @@ import os
 
 import customtkinter as ctk
 from ui.scan_view import ScanView
-from ui.overlay_settings_window import OverlaySettingsWindow
+from ui.overlay_settings_view import OverlaySettingsView
 
 
 ctk.set_appearance_mode("dark")
@@ -36,7 +36,11 @@ class MainWindow(ctk.CTk):
             "click_through": True,
             "show_fps": True,
             "show_gpu": True,
+            "show_gpu_temp": True,
+            "show_gpu_pwr": True,
             "show_cpu": True,
+            "show_cpu_temp": True,
+            "show_cpu_pwr": True,
             "show_ram": True,
         }
 
@@ -69,7 +73,7 @@ class MainWindow(ctk.CTk):
         self.overlay_settings_btn = ctk.CTkButton(
             self.sidebar,
             text="Overlay Settings",
-            command=self.open_overlay_settings
+            command=self.show_overlay_settings
         )
         self.overlay_settings_btn.pack(pady=8, padx=10, fill="x")
 
@@ -155,26 +159,22 @@ class MainWindow(ctk.CTk):
 
     # ── Overlay settings popup ─────────────────────────────────
 
-    def open_overlay_settings(self):
-        if self._overlay_settings_window is None or not self._overlay_settings_window.winfo_exists():
-            self._overlay_settings_window = OverlaySettingsWindow(
-                parent=self,
-                initial_settings=self.overlay_settings,
-                on_apply=self.apply_overlay_settings
-            )
-            self._overlay_settings_window.after(100, self._overlay_settings_window.lift)
-        else:
-            self._overlay_settings_window.focus()
-            self._overlay_settings_window.lift()
+    def show_overlay_settings(self):
+        self._clear_main()
+        self.current_view = OverlaySettingsView(
+            parent=self.main_frame,
+            initial_settings=self.overlay_settings,
+            on_apply=self.apply_overlay_settings
+        )
+        self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
     def apply_overlay_settings(self, settings: dict):
         self.overlay_settings = settings
 
         if self._is_overlay_running():
-            self._overlay_status.configure(
-                text="Overlay: ON (restart to apply)",
-                text_color="#f5c542"
-            )
+            # Auto-restart overlay so new settings take effect immediately
+            self._stop_overlay()
+            self._start_overlay()
         else:
             self._overlay_status.configure(
                 text="Overlay settings saved",
@@ -212,7 +212,11 @@ class MainWindow(ctk.CTk):
             env["FPS_OVERLAY_CLICK_THROUGH"] = str(self.overlay_settings["click_through"])
             env["FPS_OVERLAY_SHOW_FPS"] = str(self.overlay_settings["show_fps"])
             env["FPS_OVERLAY_SHOW_GPU"] = str(self.overlay_settings["show_gpu"])
+            env["FPS_OVERLAY_SHOW_GPU_TEMP"] = str(self.overlay_settings["show_gpu_temp"])
+            env["FPS_OVERLAY_SHOW_GPU_PWR"] = str(self.overlay_settings["show_gpu_pwr"])
             env["FPS_OVERLAY_SHOW_CPU"] = str(self.overlay_settings["show_cpu"])
+            env["FPS_OVERLAY_SHOW_CPU_TEMP"] = str(self.overlay_settings["show_cpu_temp"])
+            env["FPS_OVERLAY_SHOW_CPU_PWR"] = str(self.overlay_settings["show_cpu_pwr"])
             env["FPS_OVERLAY_SHOW_RAM"] = str(self.overlay_settings["show_ram"])
 
             creationflags = 0
@@ -249,6 +253,13 @@ class MainWindow(ctk.CTk):
                 except Exception:
                     pass
             self._overlay_proc = None
+            
+            # Hard-kill any lingering PresentMon background instances since terminate() skips overlay's atexit
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", "PresentMon-2.5.1-x64.exe"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception:
+                pass
 
         self.overlay_btn.configure(
             text="▶  Start Overlay",
@@ -259,4 +270,8 @@ class MainWindow(ctk.CTk):
 
     def _close_app(self):
         self._stop_overlay()
-        self.destroy()
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        os._exit(0)

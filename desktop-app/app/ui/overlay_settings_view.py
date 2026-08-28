@@ -1,21 +1,14 @@
 import customtkinter as ctk
 
 
-class OverlaySettingsWindow(ctk.CTkToplevel):
+class OverlaySettingsView(ctk.CTkFrame):
     def __init__(self, parent, initial_settings: dict, on_apply):
         super().__init__(parent)
 
-        self.parent = parent
         self.on_apply = on_apply
 
-        self.title("Overlay Settings")
-        self.geometry("520x760")
-        self.minsize(480, 700)
-
-        self.attributes("-topmost", True)
-        self.focus()
-
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
         self.settings = dict(initial_settings)
 
@@ -36,7 +29,6 @@ class OverlaySettingsWindow(ctk.CTkToplevel):
 
         self.content = ctk.CTkScrollableFrame(self)
         self.content.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
-        self.grid_rowconfigure(2, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
 
         row = 0
@@ -170,38 +162,45 @@ class OverlaySettingsWindow(ctk.CTkToplevel):
         self.show_fps_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
         row += 1
 
-        self.show_gpu_checkbox = ctk.CTkCheckBox(self.content, text="Show GPU")
+        self.show_gpu_checkbox = ctk.CTkCheckBox(self.content, text="Show GPU Usage")
         self.show_gpu_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
         row += 1
 
-        self.show_cpu_checkbox = ctk.CTkCheckBox(self.content, text="Show CPU")
-        self.show_cpu_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
+        self.show_gpu_temp_checkbox = ctk.CTkCheckBox(self.content, text="Show GPU Temp")
+        self.show_gpu_temp_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
+        row += 1
+        
+        self.show_gpu_pwr_checkbox = ctk.CTkCheckBox(self.content, text="Show GPU Power")
+        self.show_gpu_pwr_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
         row += 1
 
-        self.show_ram_checkbox = ctk.CTkCheckBox(self.content, text="Show RAM")
+        self.show_cpu_checkbox = ctk.CTkCheckBox(self.content, text="Show CPU Usage")
+        self.show_cpu_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
+        row += 1
+        
+        self.show_cpu_temp_checkbox = ctk.CTkCheckBox(self.content, text="Show CPU Temp")
+        self.show_cpu_temp_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
+        row += 1
+        
+        self.show_cpu_pwr_checkbox = ctk.CTkCheckBox(self.content, text="Show CPU Power")
+        self.show_cpu_pwr_checkbox.grid(row=row, column=0, padx=10, pady=4, sticky="w")
+        row += 1
+
+        self.show_ram_checkbox = ctk.CTkCheckBox(self.content, text="Show RAM Usage")
         self.show_ram_checkbox.grid(row=row, column=0, padx=10, pady=(4, 14), sticky="w")
         row += 1
 
         # Bottom buttons
         self.button_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.button_frame.grid(row=3, column=0, padx=20, pady=(10, 20), sticky="ew")
-        self.button_frame.grid_columnconfigure((0, 1), weight=1)
+        self.button_frame.grid_columnconfigure(0, weight=1)
 
         self.apply_button = ctk.CTkButton(
             self.button_frame,
-            text="Apply",
+            text="Apply Settings to Overlay",
             command=self.apply_settings
         )
-        self.apply_button.grid(row=0, column=0, padx=(0, 8), sticky="ew")
-
-        self.close_button = ctk.CTkButton(
-            self.button_frame,
-            text="Close",
-            fg_color="#444",
-            hover_color="#333",
-            command=self.destroy
-        )
-        self.close_button.grid(row=0, column=1, padx=(8, 0), sticky="ew")
+        self.apply_button.grid(row=0, column=0, sticky="ew")
 
         self._load_initial_values()
 
@@ -249,11 +248,31 @@ class OverlaySettingsWindow(ctk.CTkToplevel):
             self.show_gpu_checkbox.select()
         else:
             self.show_gpu_checkbox.deselect()
+            
+        if self.settings.get("show_gpu_temp", True):
+            self.show_gpu_temp_checkbox.select()
+        else:
+            self.show_gpu_temp_checkbox.deselect()
+            
+        if self.settings.get("show_gpu_pwr", True):
+            self.show_gpu_pwr_checkbox.select()
+        else:
+            self.show_gpu_pwr_checkbox.deselect()
 
         if self.settings["show_cpu"]:
             self.show_cpu_checkbox.select()
         else:
             self.show_cpu_checkbox.deselect()
+            
+        if self.settings.get("show_cpu_temp", True):
+            self.show_cpu_temp_checkbox.select()
+        else:
+            self.show_cpu_temp_checkbox.deselect()
+            
+        if self.settings.get("show_cpu_pwr", True):
+            self.show_cpu_pwr_checkbox.select()
+        else:
+            self.show_cpu_pwr_checkbox.deselect()
 
         if self.settings["show_ram"]:
             self.show_ram_checkbox.select()
@@ -298,7 +317,11 @@ class OverlaySettingsWindow(ctk.CTkToplevel):
             "click_through": bool(self.click_through_checkbox.get()),
             "show_fps": bool(self.show_fps_checkbox.get()),
             "show_gpu": bool(self.show_gpu_checkbox.get()),
+            "show_gpu_temp": bool(self.show_gpu_temp_checkbox.get()),
+            "show_gpu_pwr": bool(self.show_gpu_pwr_checkbox.get()),
             "show_cpu": bool(self.show_cpu_checkbox.get()),
+            "show_cpu_temp": bool(self.show_cpu_temp_checkbox.get()),
+            "show_cpu_pwr": bool(self.show_cpu_pwr_checkbox.get()),
             "show_ram": bool(self.show_ram_checkbox.get()),
         }
 

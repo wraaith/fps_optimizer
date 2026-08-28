@@ -84,6 +84,8 @@ class NvidiaSmiBackend(GPUBackend):
     ]
 
     def __init__(self):
+        import time
+        self._time = time
         result = subprocess.run(
             self._CMD, capture_output=True, text=True, timeout=5,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -94,18 +96,27 @@ class NvidiaSmiBackend(GPUBackend):
         if len(parts) < 3:
             raise RuntimeError("unexpected nvidia-smi output")
         self._name = parts[0].strip()
+        self._last_query_time = 0.0
+        self._last_temp = None
+        self._last_usage = None
 
     def _query(self) -> Tuple[Optional[float], Optional[float]]:
+        now = self._time.time()
+        if now - self._last_query_time < 0.9:
+            return self._last_temp, self._last_usage
+
         try:
             result = subprocess.run(
                 self._CMD, capture_output=True, text=True, timeout=5,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             parts = result.stdout.strip().split(", ")
-            temp = float(parts[1]) if len(parts) > 1 else None
-            usage = float(parts[2]) if len(parts) > 2 else None
-            return temp, usage
+            self._last_temp = float(parts[1]) if len(parts) > 1 else None
+            self._last_usage = float(parts[2]) if len(parts) > 2 else None
+            self._last_query_time = now
+            return self._last_temp, self._last_usage
         except Exception:
+            self._last_query_time = now
             return None, None
 
     def get_name(self) -> str:
