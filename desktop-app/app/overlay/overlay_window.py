@@ -1,26 +1,57 @@
-"""Always-on-top, configurable FPS and hardware overlay."""
+"""Always-on-top, themeable FPS and hardware overlay.
+
+Uses the overlay styling kit:
+    - ``FontManager``       — custom TTF/OTF font registration
+    - ``ThemeEngine``       — live theme switching (minimalist_dark / vibrant_glass)
+    - ``OverlayPanel``      — rounded-corner metric row widgets
+    - ``transparency``      — pywinstyles acrylic / mica / solid modes
+
+The overlay can switch between themes at runtime without rebuilding
+the widget tree.
+"""
+
+from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import os
-import tkinter as tk
+import platform
 from typing import Optional
 
-from .metrics_collector import MetricsCollector
+import customtkinter as ctk
 
+from .font_manager import FontManager
+from .metrics_collector import MetricsCollector
+from .theme_engine import ThemeEngine, ThemePreset
+from .transparency import apply_transparency, TRANSPARENT_COLOR_KEY
+from .widget_templates import MetricRow, OverlayPanel
+
+# ── DPI awareness ──────────────────────────────────────────────────────
+# Must be called BEFORE any Tk window is created so Windows does not
+# apply bitmap-scaling (the main cause of blurry overlay text).
+try:
+    # Per-Monitor DPI Aware (v2) – best quality on mixed-DPI setups
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        # Fallback: System DPI Aware
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+# ── Win32 window style constants ─────────────────────────────────────
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOOLWINDOW = 0x00000080
 
-user32 = ctypes.windll.user32
-user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-user32.GetWindowLongW.restype = ctypes.c_long
-user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
-user32.SetWindowLongW.restype = ctypes.c_long
-
-TRANSPARENT_KEY = "#010101"
-SOLID_BG_COLOR = "#1a1a2e"
-DEFAULT_LABEL_COLOR = "#888888"
-DEFAULT_VALUE_COLOR = "#e0e0e0"
+if platform.system() == "Windows":
+    user32 = ctypes.windll.user32
+    user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+    user32.SetWindowLongW.restype = ctypes.c_long
+else:
+    user32 = None
 
 
 def _fmt(value, suffix: str = "", decimals: int = 0) -> str:
@@ -35,28 +66,54 @@ def _fmt(value, suffix: str = "", decimals: int = 0) -> str:
         return str(value)
 
 
-class OverlayWindow(tk.Toplevel):
-    """Configurable overlay attached to an existing Tk/CustomTkinter root."""
+class OverlayWindow(ctk.CTkToplevel):
+    """Configurable, themeable overlay attached to an existing CTk root."""
 
-    def __init__(self, master):
+    def __init__(self, master) -> None:
         super().__init__(master)
 
         self._closed = False
-        self._label_widgets = {}
-        self._value_widgets = {}
-        self.settings = self._load_settings()
+        self._settings = self._load_settings()
+
+        # ── Font manager ─────────────────────────────────────────
+        self._font_manager = FontManager()
+        discovered = self._font_manager.auto_discover()
+        if discovered:
+            print(f"[Overlay] Loaded fonts: {', '.join(discovered)}")
+
+        # ── Theme engine ─────────────────────────────────────────
+        initial_theme = self._settings.get("theme", "minimalist_dark")
+        self._theme_engine = ThemeEngine(
+            font_manager=self._font_manager,
+            initial_theme=initial_theme,
+        )
+        self._theme_engine.on_theme_changed(self._on_theme_changed)
+
+        # ── Apply user overrides on top of the theme ─────────────
+        self._apply_settings_overrides()
+
+        # ── Metrics collector ────────────────────────────────────
         self.collector = MetricsCollector(
-            target_process=self.settings.get("target_process") or None
+            target_process=self._settings.get("target_process") or None
         )
 
+        # ── Window setup ─────────────────────────────────────────
         self.withdraw()
         self.title("FPS Overlay")
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        self.wm_attributes("-toolwindow", True)
 
+        try:
+            self.wm_attributes("-toolwindow", True)
+        except Exception:
+            pass
+
+        # ── Build UI ─────────────────────────────────────────────
         self._build_ui()
-        self._apply_mode()
+        self._apply_transparency()
+        self._apply_visibility()
+
+        # ── Show ─────────────────────────────────────────────────
         self.deiconify()
         self.lift()
 
@@ -64,6 +121,8 @@ class OverlayWindow(tk.Toplevel):
         self.after(150, self._apply_window_styles)
         self.after(300, self._update_metrics)
         self.protocol("WM_DELETE_WINDOW", self.close)
+
+    # ── Settings ─────────────────────────────────────────────────
 
     def _load_settings(self) -> dict:
         def get_bool(name: str, default: bool) -> bool:
@@ -85,12 +144,14 @@ class OverlayWindow(tk.Toplevel):
                 return default
 
         settings = {
-            "text_color": os.getenv("FPS_OVERLAY_TEXT_COLOR", DEFAULT_VALUE_COLOR),
-            "bg_mode": os.getenv("FPS_OVERLAY_BG_MODE", "transparent").lower(),
-            "bg_opacity": get_float("FPS_OVERLAY_BG_OPACITY", 0.85),
-            "font_size": get_int("FPS_OVERLAY_FONT_SIZE", 18),
+            "theme": os.getenv("FPS_OVERLAY_THEME", "minimalist_dark").lower(),
+            "text_color": os.getenv("FPS_OVERLAY_TEXT_COLOR", ""),
+            "bg_mode": os.getenv("FPS_OVERLAY_BG_MODE", ""),
+            "bg_opacity": get_float("FPS_OVERLAY_BG_OPACITY", -1),
+            "font_size": get_int("FPS_OVERLAY_FONT_SIZE", -1),
             "scale": get_float("FPS_OVERLAY_SCALE", 1.0),
             "position": os.getenv("FPS_OVERLAY_POSITION", "top-right").lower(),
+            "layout": os.getenv("FPS_OVERLAY_LAYOUT", "vertical").lower(),
             "click_through": get_bool("FPS_OVERLAY_CLICK_THROUGH", True),
             "target_process": os.getenv("FPS_OVERLAY_TARGET_PROCESS", "").strip(),
             "show_fps": get_bool("FPS_OVERLAY_SHOW_FPS", True),
@@ -103,150 +164,126 @@ class OverlayWindow(tk.Toplevel):
             "show_ram": get_bool("FPS_OVERLAY_SHOW_RAM", True),
         }
 
-        settings["bg_opacity"] = max(0.0, min(1.0, settings["bg_opacity"]))
-        settings["font_size"] = max(10, min(40, settings["font_size"]))
         settings["scale"] = max(0.8, min(2.0, settings["scale"]))
         return settings
 
-    def _build_ui(self):
-        self.outer_frame = tk.Frame(
-            self, bg=TRANSPARENT_KEY, bd=0, highlightthickness=0
+    def _apply_settings_overrides(self) -> None:
+        """If the user set explicit env-vars, override the theme defaults."""
+        overrides = {}
+        s = self._settings
+
+        if s["text_color"]:
+            overrides["value_color"] = s["text_color"]
+        if s["bg_mode"]:
+            overrides["bg_mode"] = s["bg_mode"]
+        if s["bg_opacity"] >= 0:
+            overrides["bg_opacity"] = max(0.0, min(1.0, s["bg_opacity"]))
+        if s["font_size"] > 0:
+            size = max(10, min(40, s["font_size"]))
+            overrides["label_size"] = size
+            overrides["value_size"] = size + 2
+
+        if overrides:
+            self._theme_engine.apply_overrides(**overrides)
+
+    # ── UI construction ──────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        """Create the panel and the theme-toggle button."""
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # ── Overlay Panel ────────────────────────────────────────
+        self._panel = OverlayPanel(
+            self,
+            preset=self._theme_engine.current,
+            layout_mode=self._settings.get("layout", "vertical"),
         )
-        self.outer_frame.pack(anchor="nw", padx=12, pady=12)
+        self._panel.grid(row=0, column=0, sticky="nsew")
 
-        self.content_frame = tk.Frame(
-            self.outer_frame, bg=TRANSPARENT_KEY, bd=0, highlightthickness=0
+    def _apply_transparency(self) -> None:
+        """Apply the current theme's transparency mode."""
+        preset = self._theme_engine.current
+        applied = apply_transparency(
+            self,
+            mode=preset.bg_mode,
+            opacity=preset.bg_opacity,
+            bg_color=preset.bg_color,
         )
-        self.content_frame.pack(anchor="nw")
-
-        rows = [
-            ("fps", "FPS"),
-            ("gpu", "GPU"),
-            ("gpu_temp", "GPU Temp"),
-            ("gpu_pwr", "GPU Pwr"),
-            ("cpu", "CPU"),
-            ("cpu_temp", "CPU Temp"),
-            ("cpu_pwr", "CPU Pwr"),
-            ("ram", "RAM"),
-        ]
-
-        for row, (key, title) in enumerate(rows):
-            label = tk.Label(
-                self.content_frame,
-                text=f"{title}:",
-                font=("Segoe UI", 12, "bold"),
-                fg=DEFAULT_LABEL_COLOR,
-                bg=TRANSPARENT_KEY,
-                anchor="w",
-            )
-            label.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
-
-            value = tk.Label(
-                self.content_frame,
-                text="--",
-                font=("Segoe UI", 12, "bold"),
-                fg=self.settings["text_color"],
-                bg=TRANSPARENT_KEY,
-                anchor="w",
-            )
-            value.grid(row=row, column=1, sticky="w", pady=2)
-
-            self._label_widgets[key] = label
-            self._value_widgets[key] = value
-
-    def _apply_mode(self):
-        size = max(10, int(self.settings["font_size"] * self.settings["scale"]))
-        label_font = ("Segoe UI", size, "bold")
-        value_font = ("Segoe UI", size, "bold")
-
-        if self.settings["bg_mode"] == "solid":
-            bg = SOLID_BG_COLOR
-            self.configure(bg=bg)
-            self.outer_frame.configure(bg=bg)
-            self.content_frame.configure(bg=bg)
-            self.wm_attributes("-alpha", max(0.75, self.settings["bg_opacity"]))
-            self.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
-        else:
-            bg = TRANSPARENT_KEY
-            self.configure(bg=bg)
-            self.outer_frame.configure(bg=bg)
-            self.content_frame.configure(bg=bg)
-            self.wm_attributes("-alpha", 1.0)
-            self.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
-
-        for key in self._label_widgets:
-            self._label_widgets[key].configure(font=label_font, bg=bg)
-            self._value_widgets[key].configure(
-                font=value_font,
-                fg=self.settings["text_color"],
-                bg=bg,
+        if applied != preset.bg_mode:
+            print(
+                f"[Overlay] Transparency '{preset.bg_mode}' unavailable, "
+                f"fell back to '{applied}'"
             )
 
-        self._apply_visibility()
+    def _apply_visibility(self) -> None:
+        """Sync metric visibility from settings."""
+        visibility = {
+            key: self._settings.get(f"show_{key}", True)
+            for key in self._panel.rows
+        }
+        self._panel.bulk_set_visibility(visibility)
         self.update_idletasks()
         self._update_position()
 
-    def _apply_visibility(self):
-        visibility = {
-            key: self.settings.get(f"show_{key}", True)
-            for key in self._label_widgets
-        }
+    # ── Theme switching ──────────────────────────────────────────
 
-        row = 0
-        for key in self._label_widgets:
-            label = self._label_widgets[key]
-            value = self._value_widgets[key]
+    def switch_theme(self, name: str) -> None:
+        """Public method to switch the overlay theme at runtime."""
+        self._theme_engine.switch_theme(name)
 
-            if visibility[key]:
-                label.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
-                value.grid(row=row, column=1, sticky="w", pady=2)
-                row += 1
-            else:
-                label.grid_remove()
-                value.grid_remove()
+    def _on_theme_changed(self, preset: ThemePreset) -> None:
+        """Callback fired by ThemeEngine — re-style everything in place."""
+        # Re-theme the panel and all rows
+        self._panel.apply_theme(preset)
 
-        if row == 0:
-            self._label_widgets["fps"].grid(
-                row=0, column=0, sticky="w", padx=(0, 8), pady=2
-            )
-            self._value_widgets["fps"].grid(row=0, column=1, sticky="w", pady=2)
-            self._label_widgets["fps"].configure(text="INFO:")
-            self._value_widgets["fps"].configure(text="No metrics selected")
-        else:
-            self._label_widgets["fps"].configure(text="FPS:")
+        # Re-apply transparency for the new mode
+        self._apply_transparency()
 
-    def _update_position(self):
+        # Update layout
+        self.update_idletasks()
+        self._update_position()
+
+    # ── Position ─────────────────────────────────────────────────
+
+    def _update_position(self) -> None:
         self.update_idletasks()
         width = self.winfo_reqwidth()
         height = self.winfo_reqheight()
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
         margin = 20
+        right_margin = 45  # Nudge further left for cleaner look
         taskbar = 60
-        position = self.settings.get("position", "top-right")
+        position = self._settings.get("position", "top-right")
 
         if position == "top-left":
             x, y = margin, margin
         elif position == "bottom-left":
             x, y = margin, max(margin, screen_h - height - taskbar)
         elif position == "bottom-right":
-            x = max(margin, screen_w - width - margin)
+            x = max(margin, screen_w - width - right_margin)
             y = max(margin, screen_h - height - taskbar)
         else:
-            x = max(margin, screen_w - width - margin)
+            x = max(margin, screen_w - width - right_margin)
             y = margin
 
         self.geometry(f"+{x}+{y}")
 
-    def _apply_window_styles(self):
+    # ── Window styles ────────────────────────────────────────────
+
+    def _apply_window_styles(self) -> None:
         if self._closed or not self.winfo_exists():
+            return
+
+        if user32 is None:
             return
 
         hwnd = self.winfo_id()
         style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         style |= WS_EX_TOOLWINDOW
 
-        if self.settings.get("click_through", True):
+        if self._settings.get("click_through", True):
             style |= WS_EX_TRANSPARENT
         else:
             style &= ~WS_EX_TRANSPARENT
@@ -255,35 +292,51 @@ class OverlayWindow(tk.Toplevel):
         self.attributes("-topmost", True)
         self.lift()
 
-    def _update_metrics(self):
+    # ── Metrics update loop ──────────────────────────────────────
+
+    # Pre-built mapping: metric_key → (snapshot_key, suffix)
+    # Avoids rebuilding a dict and calling _fmt() with suffix arg every tick.
+    _METRIC_MAP = (
+        ("fps",      "fps",         ""),
+        ("gpu",      "gpu_usage",   "%"),
+        ("gpu_temp", "gpu_temp",    "°C"),
+        ("gpu_pwr",  "gpu_power_w", "W"),
+        ("cpu",      "cpu_usage",   "%"),
+        ("cpu_temp", "cpu_temp",    "°C"),
+        ("cpu_pwr",  "cpu_power_w", "W"),
+        ("ram",      "ram_usage",   "%"),
+    )
+
+    def _update_metrics(self) -> None:
         if self._closed or not self.winfo_exists():
             return
 
         try:
             data = self.collector.snapshot
         except Exception:
-            data = {}
+            self.after(500, self._update_metrics)
+            return
 
-        values = {
-            "fps": (_fmt(data.get("fps")), ""),
-            "gpu": (_fmt(data.get("gpu_usage"), "%"), ""),
-            "gpu_temp": (_fmt(data.get("gpu_temp"), "°C"), ""),
-            "gpu_pwr": (_fmt(data.get("gpu_power_w"), "W"), ""),
-            "cpu": (_fmt(data.get("cpu_usage"), "%"), ""),
-            "cpu_temp": (_fmt(data.get("cpu_temp"), "°C"), ""),
-            "cpu_pwr": (_fmt(data.get("cpu_power_w"), "W"), ""),
-            "ram": (_fmt(data.get("ram_usage"), "%"), ""),
-        }
+        # Pass color explicitly; panel's set_value dirty-checks internally
+        # so it won't redraw unless the value or color actually changed.
+        preset = self._theme_engine.current
+        panel = self._panel
+        for widget_key, data_key, suffix in self._METRIC_MAP:
+            panel.set_value(widget_key, _fmt(data.get(data_key), suffix), color=preset.value_color)
 
-        for key, (text, _) in values.items():
-            self._value_widgets[key].configure(
-                text=text,
-                fg=self.settings["text_color"],
-            )
+        # Re-position if the text expansion caused the window to grow (prevents spilling off-screen in horizontal mode)
+        current_req_width = self.winfo_reqwidth()
+        current_req_height = self.winfo_reqheight()
+        if getattr(self, "_last_req_width", 0) != current_req_width or getattr(self, "_last_req_height", 0) != current_req_height:
+            self._last_req_width = current_req_width
+            self._last_req_height = current_req_height
+            self._update_position()
 
         self.after(500, self._update_metrics)
 
-    def close(self):
+    # ── Cleanup ──────────────────────────────────────────────────
+
+    def close(self) -> None:
         if self._closed:
             return
 

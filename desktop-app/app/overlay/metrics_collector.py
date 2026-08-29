@@ -155,17 +155,14 @@ def _normalise_header(value: str) -> str:
 
 
 def _find_column(
-    row: Dict[str, str],
+    normalized_row: Dict[str, str],
     *possible_names: str,
 ) -> Optional[str]:
-    """Return a CSV value using multiple possible column names."""
+    """Return a CSV value using multiple possible column names.
 
-    normalized_row = {
-        _normalise_header(key): value.strip()
-        for key, value in row.items()
-        if key is not None
-    }
-
+    Expects *normalized_row* to already have normalised keys
+    (via ``_normalise_header``).
+    """
     for name in possible_names:
         value = normalized_row.get(_normalise_header(name))
 
@@ -432,6 +429,14 @@ class MetricsCollector:
 
         self._pm_thread = None
 
+    # Process names that are never interesting for FPS metrics.
+    _IGNORED_APPS = frozenset({
+        "dwm.exe",
+        "explorer.exe",
+        "unknown",
+        "desktop window manager",
+    })
+
     def _is_target_application(self, application: str) -> bool:
         """Return whether a PresentMon row belongs to the target app."""
 
@@ -440,14 +445,7 @@ class MetricsCollector:
         if not application:
             return False
 
-        ignored_applications = {
-            "dwm.exe",
-            "explorer.exe",
-            "unknown",
-            "desktop window manager",
-        }
-
-        if application in ignored_applications:
+        if application in self._IGNORED_APPS:
             return False
 
         if not self._target_process:
@@ -522,8 +520,15 @@ class MetricsCollector:
                     zip(headers, cleaned_fields)
                 )
 
+                # Normalise keys ONCE per row instead of per-column lookup.
+                norm_row = {
+                    _normalise_header(k): v.strip()
+                    for k, v in row.items()
+                    if k is not None
+                }
+
                 application = _find_column(
-                    row,
+                    norm_row,
                     "Application",
                     "ApplicationName",
                     "ProcessName",
@@ -537,7 +542,7 @@ class MetricsCollector:
                 # ── FPS ─────────────────────────────────────
 
                 ms_between = _find_column(
-                    row,
+                    norm_row,
                     "MsBetweenPresents",
                     "MsBetweenPresent",
                 )
@@ -556,7 +561,7 @@ class MetricsCollector:
                 # ── CPU power ───────────────────────────────
 
                 cpu_power = _find_column(
-                    row,
+                    norm_row,
                     "CpuPowerW",
                     "CPU Power (W)",
                     "CpuPower",
@@ -575,7 +580,7 @@ class MetricsCollector:
                 # ── GPU power ───────────────────────────────
 
                 gpu_power = _find_column(
-                    row,
+                    norm_row,
                     "GpuPowerW",
                     "GPU Power (W)",
                     "GpuPower",

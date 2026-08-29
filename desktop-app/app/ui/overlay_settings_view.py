@@ -33,6 +33,22 @@ class OverlaySettingsView(ctk.CTkFrame):
 
         row = 0
 
+        # ── Theme preset ─────────────────────────────────────────
+        ctk.CTkLabel(
+            self.content,
+            text="Theme Preset",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=row, column=0, padx=10, pady=(10, 6), sticky="w")
+        row += 1
+
+        self.theme_segment = ctk.CTkSegmentedButton(
+            self.content,
+            values=["Minimalist Dark", "Vibrant Glass"],
+            command=self._on_theme_preset_change
+        )
+        self.theme_segment.grid(row=row, column=0, padx=10, pady=(0, 14), sticky="ew")
+        row += 1
+
         # Text color
         ctk.CTkLabel(
             self.content,
@@ -58,7 +74,7 @@ class OverlaySettingsView(ctk.CTkFrame):
 
         self.bg_mode_segment = ctk.CTkSegmentedButton(
             self.content,
-            values=["Transparent", "Solid"]
+            values=["Transparent", "Acrylic", "Solid"]
         )
         self.bg_mode_segment.grid(row=row, column=0, padx=10, pady=(0, 14), sticky="ew")
         row += 1
@@ -85,7 +101,7 @@ class OverlaySettingsView(ctk.CTkFrame):
         # Font size
         self.font_size_label = ctk.CTkLabel(
             self.content,
-            text="Font Size: 18",
+            text="Font Size: 14",
             font=ctk.CTkFont(size=16, weight="bold")
         )
         self.font_size_label.grid(row=row, column=0, padx=10, pady=(10, 6), sticky="w")
@@ -93,9 +109,9 @@ class OverlaySettingsView(ctk.CTkFrame):
 
         self.font_size_slider = ctk.CTkSlider(
             self.content,
-            from_=12,
+            from_=10,
             to=32,
-            number_of_steps=20,
+            number_of_steps=22,
             command=self._on_font_size_change
         )
         self.font_size_slider.grid(row=row, column=0, padx=10, pady=(0, 14), sticky="ew")
@@ -133,6 +149,20 @@ class OverlaySettingsView(ctk.CTkFrame):
             values=["Top Left", "Top Right", "Bottom Left", "Bottom Right"]
         )
         self.position_segment.grid(row=row, column=0, padx=10, pady=(0, 14), sticky="ew")
+        row += 1
+
+        ctk.CTkLabel(
+            self.content,
+            text="Layout Mode",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).grid(row=row, column=0, padx=10, pady=(4, 6), sticky="w")
+        row += 1
+
+        self.layout_segment = ctk.CTkSegmentedButton(
+            self.content,
+            values=["Vertical", "Horizontal"]
+        )
+        self.layout_segment.grid(row=row, column=0, padx=10, pady=(0, 14), sticky="ew")
         row += 1
 
         # Click-through
@@ -204,47 +234,96 @@ class OverlaySettingsView(ctk.CTkFrame):
 
         self._load_initial_values()
 
+    # ── Theme preset auto-fill ───────────────────────────────────
+
+    _THEME_DEFAULTS = {
+        "Minimalist Dark": {
+            "text_color": "White",
+            "bg_mode": "Solid",
+            "bg_opacity": 0.92,
+            "font_size": 14,
+            "scale": 1.0,
+        },
+        "Vibrant Glass": {
+            "text_color": "Green",
+            "bg_mode": "Acrylic",
+            "bg_opacity": 0.65,
+            "font_size": 15,
+            "scale": 1.0,
+        },
+    }
+
+    def _on_theme_preset_change(self, value: str) -> None:
+        """Auto-fill settings when a theme preset is selected."""
+        defaults = self._THEME_DEFAULTS.get(value)
+        if not defaults:
+            return
+
+        self.text_color_segment.set(defaults["text_color"])
+        self.bg_mode_segment.set(defaults["bg_mode"])
+        self.bg_opacity_slider.set(defaults["bg_opacity"])
+        self._on_bg_opacity_change(defaults["bg_opacity"])
+        self.font_size_slider.set(defaults["font_size"])
+        self._on_font_size_change(defaults["font_size"])
+        self.scale_slider.set(defaults["scale"])
+        self._on_scale_change(defaults["scale"])
+
     def _load_initial_values(self):
         color_map = {
             "#00ff00": "Green",
+            "#00ffaa": "Green",
             "#ffffff": "White",
+            "#cccccc": "White",
+            "#e0e0e0": "White",
             "#ffff00": "Yellow",
             "#00ffff": "Cyan",
             "#ff4d4f": "Red",
         }
         reverse_bg_map = {
             "transparent": "Transparent",
+            "acrylic": "Acrylic",
             "solid": "Solid",
         }
         reverse_position_map = {
             "top-left": "Top Left",
             "top-right": "Top Right",
-            "bottom-left": "Bottom Left",
-            "bottom-right": "Bottom Right",
+            "bottom-left": "bottom-left",
+            "bottom-right": "bottom-right",
+        }
+        layout_map = {
+            "Vertical": "vertical",
+            "Horizontal": "horizontal",
+        }
+        reverse_theme_map = {
+            "minimalist_dark": "Minimalist Dark",
+            "vibrant_glass": "Vibrant Glass",
         }
 
-        self.text_color_segment.set(color_map.get(self.settings["text_color"], "Green"))
-        self.bg_mode_segment.set(reverse_bg_map.get(self.settings["bg_mode"], "Transparent"))
-        self.bg_opacity_slider.set(float(self.settings["bg_opacity"]))
-        self.font_size_slider.set(int(self.settings["font_size"]))
-        self.scale_slider.set(float(self.settings["scale"]))
-        self.position_segment.set(reverse_position_map.get(self.settings["position"], "Top Right"))
+        theme_name = self.settings.get("theme", "minimalist_dark")
+        self.theme_segment.set(reverse_theme_map.get(theme_name, "Minimalist Dark"))
 
-        self._on_bg_opacity_change(float(self.settings["bg_opacity"]))
-        self._on_font_size_change(float(self.settings["font_size"]))
-        self._on_scale_change(float(self.settings["scale"]))
+        self.text_color_segment.set(color_map.get(self.settings.get("text_color", ""), "Green"))
+        self.bg_mode_segment.set(reverse_bg_map.get(self.settings.get("bg_mode", "solid"), "Solid"))
+        self.bg_opacity_slider.set(float(self.settings.get("bg_opacity", 0.85)))
+        self.font_size_slider.set(int(self.settings.get("font_size", 14)))
+        self.scale_slider.set(float(self.settings.get("scale", 1.0)))
+        self.position_segment.set(reverse_position_map.get(self.settings.get("position", "top-right"), "Top Right"))
 
-        if self.settings["click_through"]:
-            self.click_through_checkbox.select()
-        else:
-            self.click_through_checkbox.deselect()
+        self._on_bg_opacity_change(float(self.settings.get("bg_opacity", 0.85)))
+        self._on_font_size_change(float(self.settings.get("font_size", 14)))
+        self._on_scale_change(float(self.settings.get("scale", 1.0)))
 
-        if self.settings["show_fps"]:
+        layout_name = self.settings.get("layout", "vertical")
+        self.layout_segment.set("Horizontal" if layout_name == "horizontal" else "Vertical")
+
+        self.click_through_checkbox.select() if self.settings.get("click_through", True) else self.click_through_checkbox.deselect()
+
+        if self.settings.get("show_fps", True):
             self.show_fps_checkbox.select()
         else:
             self.show_fps_checkbox.deselect()
 
-        if self.settings["show_gpu"]:
+        if self.settings.get("show_gpu", True):
             self.show_gpu_checkbox.select()
         else:
             self.show_gpu_checkbox.deselect()
@@ -259,7 +338,7 @@ class OverlaySettingsView(ctk.CTkFrame):
         else:
             self.show_gpu_pwr_checkbox.deselect()
 
-        if self.settings["show_cpu"]:
+        if self.settings.get("show_cpu", True):
             self.show_cpu_checkbox.select()
         else:
             self.show_cpu_checkbox.deselect()
@@ -274,7 +353,7 @@ class OverlaySettingsView(ctk.CTkFrame):
         else:
             self.show_cpu_pwr_checkbox.deselect()
 
-        if self.settings["show_ram"]:
+        if self.settings.get("show_ram", True):
             self.show_ram_checkbox.select()
         else:
             self.show_ram_checkbox.deselect()
@@ -298,6 +377,7 @@ class OverlaySettingsView(ctk.CTkFrame):
         }
         bg_map = {
             "Transparent": "transparent",
+            "Acrylic": "acrylic",
             "Solid": "solid",
         }
         position_map = {
@@ -306,14 +386,24 @@ class OverlaySettingsView(ctk.CTkFrame):
             "Bottom Left": "bottom-left",
             "Bottom Right": "bottom-right",
         }
+        layout_map = {
+            "Vertical": "vertical",
+            "Horizontal": "horizontal",
+        }
+        theme_map = {
+            "Minimalist Dark": "minimalist_dark",
+            "Vibrant Glass": "vibrant_glass",
+        }
 
         settings = {
+            "theme": theme_map.get(self.theme_segment.get(), "minimalist_dark"),
             "text_color": color_map.get(self.text_color_segment.get(), "#00ff00"),
-            "bg_mode": bg_map.get(self.bg_mode_segment.get(), "transparent"),
+            "bg_mode": bg_map.get(self.bg_mode_segment.get(), "solid"),
             "bg_opacity": round(float(self.bg_opacity_slider.get()), 2),
-            "font_size": int(float(self.font_size_slider.get())),
-            "scale": round(float(self.scale_slider.get()), 2),
+            "font_size": int(self.font_size_slider.get()),
+            "scale": float(f"{self.scale_slider.get():.2f}"),
             "position": position_map.get(self.position_segment.get(), "top-right"),
+            "layout": layout_map.get(self.layout_segment.get(), "vertical"),
             "click_through": bool(self.click_through_checkbox.get()),
             "show_fps": bool(self.show_fps_checkbox.get()),
             "show_gpu": bool(self.show_gpu_checkbox.get()),

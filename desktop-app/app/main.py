@@ -1,7 +1,18 @@
 import sys
-import tkinter as tk
 import ctypes
+import ctypes.wintypes
 import os
+
+# ── DPI awareness (must run BEFORE any Tk window is created) ──────────
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)   # Per-Monitor v2
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()     # System DPI Aware
+    except Exception:
+        pass
+
+import tkinter as tk
 
 def is_admin():
     try:
@@ -17,9 +28,12 @@ if not is_admin():
 
 
 def launch_overlay():
+    import customtkinter as ctk
     from overlay.overlay_window import OverlayWindow
 
-    root = tk.Tk()
+    ctk.set_appearance_mode("dark")
+
+    root = ctk.CTk()
     root.withdraw()
 
     overlay = OverlayWindow(root)
