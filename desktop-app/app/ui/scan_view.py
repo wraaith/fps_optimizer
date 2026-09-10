@@ -121,19 +121,36 @@ class ScanView(ctk.CTkFrame):
                 data = run_system_scan()
                 self._last_data = data
                 # Schedule UI update back on the main thread
-                self.after(0, self._display_results, data)
+                try:
+                    if self.winfo_exists():
+                        self.after(0, self._display_results, data)
+                except Exception:
+                    pass
             except Exception as e:
-                self.after(0, self._show_error, str(e))
+                try:
+                    if self.winfo_exists():
+                        self.after(0, self._show_error, str(e))
+                except Exception:
+                    pass
             finally:
-                self.after(0, lambda: self.scan_btn.configure(
-                    state="normal",
-                    text="⚡ RUN HARDWARE SCAN" if is_cyber_mode() else "Run Scan"
-                ))
+                try:
+                    if self.winfo_exists():
+                        self.after(0, lambda: self.scan_btn.configure(
+                            state="normal",
+                            text="⚡ RUN HARDWARE SCAN" if is_cyber_mode() else "Run Scan"
+                        ))
+                except Exception:
+                    pass
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
     def _display_results(self, data: dict):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         self._last_data = data
         for widget in self.results_frame.winfo_children():
             widget.destroy()
@@ -333,6 +350,11 @@ class ScanView(ctk.CTkFrame):
             self.results_frame.grid_columnconfigure(1, weight=1)
 
     def _show_error(self, msg: str):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         for widget in self.results_frame.winfo_children():
             widget.destroy()
         ctk.CTkLabel(

@@ -41,9 +41,11 @@ _wmi_check_started = False
 def _update_wmi_temp_loop():
     global _wmi_client, _wmi_failed, _wmi_temp
     
+    _com_inited = False
     try:
         import pythoncom
         pythoncom.CoInitialize()
+        _com_inited = True
     except Exception:
         pass
         
@@ -70,12 +72,13 @@ def _update_wmi_temp_loop():
     except Exception:
         _wmi_failed = True
         _wmi_temp = None
-        
-    try:
-        import pythoncom
-        pythoncom.CoUninitialize()
-    except Exception:
-        pass
+    finally:
+        if _com_inited:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 def _try_wmi_cpu_temp() -> Optional[float]:
     """Try reading CPU temperature through WMI (non-blocking)."""
@@ -247,6 +250,7 @@ class MetricsCollector:
         self._pm_thread: Optional[threading.Thread] = None
 
         self._current_fps: Optional[float] = None
+        self._last_fps_time: float = 0.0
         self._current_cpu_w: Optional[float] = None
         self._current_gpu_w: Optional[float] = None
 
@@ -557,6 +561,15 @@ class MetricsCollector:
 
                     with self._lock:
                         self._current_fps = round(fps, 1)
+                        self._last_fps_time = time.time()
+
+                    try:
+                        from services.benchmark_logger import get_history_service
+                        hs = get_history_service()
+                        if hs.is_session_active and hs.is_sentinel_running():
+                            hs.record_fps_sample(self._current_fps)
+                    except Exception:
+                        pass
 
                 # ── CPU power ───────────────────────────────
 
@@ -664,6 +677,8 @@ class MetricsCollector:
 
             # PresentMon values
             with self._lock:
+                if self._last_fps_time and (time.time() - self._last_fps_time > 2.5):
+                    self._current_fps = None
                 data["fps"] = self._current_fps
                 data["cpu_power_w"] = self._current_cpu_w
                 data["gpu_power_w"] = self._current_gpu_w

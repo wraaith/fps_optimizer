@@ -1,14 +1,20 @@
 import os
 import subprocess
 import sys
+import threading
 
 import customtkinter as ctk
 import psutil
-import pywinstyles
+try:
+    import pywinstyles
+except ImportError:
+    pywinstyles = None
 
 from ui.scan_view import ScanView
 from ui.overlay_settings_view import OverlaySettingsView
 from optimize.optimize_view import OptimizeView
+from ui.history_view import HistoryView
+from ui.network_view import NetworkView
 from ui.theme_manager import is_cyber_mode, set_cyber_mode, get_theme, get_font, on_theme_changed
 
 
@@ -20,9 +26,14 @@ class MainWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("FPS Optimizer")
-        self.geometry("920x620")
-        self.minsize(820, 520)
+        self.title("FPS Optimizer // APEX ENGINE")
+        w, h = 1060, 680
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        x = max(0, (screen_w - w) // 2)
+        y = max(0, (screen_h - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.minsize(920, 580)
         
         # Initial theme
         theme = get_theme()
@@ -140,6 +151,16 @@ class MainWindow(ctk.CTk):
         self.overlay_settings_btn.pack(pady=3, padx=10, fill="x")
         self.nav_buttons.append(self.overlay_settings_btn)
 
+        self.network_button = ctk.CTkButton(
+            self.sidebar,
+            text="[05]  NETWORK STABILIZER" if is_cyber else "Network Stabilizer",
+            command=self.show_network,
+            fg_color=theme["nav_btn_fg"], hover_color=theme["nav_btn_hover"],
+            text_color=theme["nav_btn_text"], font=get_font(12, "bold"), height=36, anchor="w"
+        )
+        self.network_button.pack(pady=3, padx=10, fill="x")
+        self.nav_buttons.append(self.network_button)
+
         spacer = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         spacer.pack(fill="both", expand=True)
 
@@ -207,6 +228,7 @@ class MainWindow(ctk.CTk):
             self.optimize_button: ("[02]  GAME BOOSTER" if is_cyber else "Game Booster"),
             self.history_button: ("[03]  TELEMETRY LOGS" if is_cyber else "History"),
             self.overlay_settings_btn: ("[04]  HUD OVERLAY CONFIG" if is_cyber else "Overlay Settings"),
+            self.network_button: ("[05]  NETWORK STABILIZER" if is_cyber else "Network Stabilizer"),
         }
 
         for btn in self.nav_buttons:
@@ -312,16 +334,26 @@ class MainWindow(ctk.CTk):
             self.current_view.apply_theme(is_cyber)
 
     def _apply_window_effects(self, is_cyber: bool):
-        """Apply or remove Windows DWM glassmorphism effects."""
+        """Apply native Windows titlebar theme safely without canvas flickering."""
+        if pywinstyles is None:
+            return
         try:
+            if not self.winfo_exists():
+                return
+            # We style native titlebar colors directly. Full-window acrylic is omitted because
+            # Tkinter lacks sub-widget alpha compositing, which causes redraw trails and black corners.
             if is_cyber:
-                pywinstyles.apply_style(self, "acrylic")
-                pywinstyles.change_header_color(self, color="#04060e")
-                pywinstyles.change_border_color(self, color="#00f0ff")
+                try:
+                    pywinstyles.change_header_color(self, color="#04060e")
+                    pywinstyles.change_border_color(self, color="#00f0ff")
+                except Exception:
+                    pass
             else:
-                pywinstyles.apply_style(self, "normal")
-                pywinstyles.change_header_color(self, color="#000000")
-                pywinstyles.change_border_color(self, color="#000000")
+                try:
+                    pywinstyles.change_header_color(self, color="#0a0a0a")
+                    pywinstyles.change_border_color(self, color="#1e1e1e")
+                except Exception:
+                    pass
         except Exception:
             pass  # Graceful fallback on older Windows versions
 
@@ -347,14 +379,8 @@ class MainWindow(ctk.CTk):
     def show_history(self):
         self._clear_main()
         self._set_active_nav_button(self.history_button)
-        theme = get_theme()
-        label = ctk.CTkLabel(
-            self.main_frame,
-            text="History view coming soon.",
-            font=get_font(16, "normal"),
-            text_color=theme["text_secondary"]
-        )
-        label.grid(row=0, column=0, padx=20, pady=20)
+        self.current_view = HistoryView(self.main_frame)
+        self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
     # ── Overlay settings popup ─────────────────────────────────
 
@@ -366,6 +392,12 @@ class MainWindow(ctk.CTk):
             initial_settings=self.overlay_settings,
             on_apply=self.apply_overlay_settings
         )
+        self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+
+    def show_network(self):
+        self._clear_main()
+        self._set_active_nav_button(self.network_button)
+        self.current_view = NetworkView(self.main_frame, on_back=self.show_optimize)
         self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
     def apply_overlay_settings(self, settings: dict):
@@ -427,17 +459,12 @@ class MainWindow(ctk.CTk):
 
             self._overlay_proc = subprocess.Popen(
                 [sys.executable, main_py, "--overlay"],
+                cwd=os.path.dirname(main_py),
                 creationflags=creationflags,
                 env=env
             )
 
-            self.overlay_btn.configure(
-                text="■  Stop Overlay",
-                fg_color="#333333", # Dark gray
-                hover_color="#444444",
-                text_color="#ffffff"
-            )
-            self._overlay_status.configure(text="Overlay: ON", text_color="#ffffff")
+            self._apply_theme_to_ui(is_cyber_mode())
 
         except Exception as e:
             self._overlay_status.configure(
@@ -445,38 +472,46 @@ class MainWindow(ctk.CTk):
                 text_color="red"
             )
 
-    def _stop_overlay(self):
+    def _stop_overlay(self, async_orphan_cleanup: bool = True):
         if self._overlay_proc is not None:
             try:
                 self._overlay_proc.terminate()
-                self._overlay_proc.wait(timeout=3)
-            except Exception:
                 try:
-                    self._overlay_proc.kill()
+                    self._overlay_proc.wait(timeout=0.6)
                 except Exception:
-                    pass
+                    self._overlay_proc.kill()
+            except Exception:
+                pass
             self._overlay_proc = None
-            
-        # 1. Clean up any orphaned python overlay processes
-        try:
-            current_pid = os.getpid()
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['pid'] != current_pid and proc.info['name'] and 'python' in proc.info['name'].lower():
-                        cmdline = proc.info.get('cmdline') or []
-                        if any('--overlay' in arg for arg in cmdline):
-                            proc.terminate()
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-        except Exception:
-            pass
 
-        # 2. Hard-kill any lingering PresentMon background instances
-        try:
-            subprocess.run(["taskkill", "/F", "/IM", "PresentMon-2.5.1-x64.exe"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-        except Exception:
-            pass
+        def _orphan_cleanup_worker():
+            try:
+                current_pid = os.getpid()
+                for proc in psutil.process_iter(['pid', 'name']):
+                    try:
+                        pname = (proc.info.get('name') or '').lower()
+                        if proc.info['pid'] != current_pid and 'python' in pname:
+                            cmdline = proc.cmdline()
+                            if any('--overlay' in arg for arg in cmdline):
+                                proc.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+            except Exception:
+                pass
+
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "PresentMon-2.5.1-x64.exe"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+            except Exception:
+                pass
+
+        if async_orphan_cleanup:
+            threading.Thread(target=_orphan_cleanup_worker, daemon=True).start()
+        else:
+            _orphan_cleanup_worker()
 
         try:
             theme = get_theme()
@@ -491,14 +526,39 @@ class MainWindow(ctk.CTk):
             pass
 
     def _close_app(self):
-        self._stop_overlay()
+        # 1. Immediately withdraw the window so closing feels instantaneous (< 1ms)
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+
+        # 2. Stop active view background telemetry/threads cleanly
+        try:
+            if self.current_view and hasattr(self.current_view, "destroy"):
+                self.current_view.destroy()
+                self.current_view = None
+        except Exception:
+            pass
+
+        # 3. Stop AI Sentinel service
         try:
             from optimize.ai_boost_service import get_ai_boost_service
             get_ai_boost_service().stop()
+        except Exception:
+            pass
+
+        # 4. Stop overlay process quickly
+        try:
+            self._stop_overlay(async_orphan_cleanup=False)
+        except Exception:
+            pass
+
+        # 5. Clean Tkinter destruction
+        try:
+            self.quit()
         except Exception:
             pass
         try:
             self.destroy()
         except Exception:
             pass
-        os._exit(0)

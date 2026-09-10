@@ -140,24 +140,40 @@ class WmiBackend(GPUBackend):
     """Uses WMI — works with any vendor but usually can't get temp/usage."""
 
     def __init__(self):
-        import wmi
-        c = wmi.WMI()
-        gpus = c.Win32_VideoController()
-        if not gpus:
-            raise RuntimeError("no GPU found via WMI")
-        # Prefer dedicated GPU
-        self._name = "Unknown GPU"
-        for gpu in gpus:
-            name = str(getattr(gpu, "Name", "") or "")
-            if name:
-                self._name = name
-                # Keep going to find a non-integrated one
-                name_upper = name.upper()
-                is_integrated = any(kw in name_upper for kw in (
-                    "INTEL", "MICROSOFT BASIC", "VEGA GRAPHICS"
-                ))
-                if not is_integrated:
-                    break
+        _com_inited = False
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            _com_inited = True
+        except Exception:
+            pass
+
+        try:
+            import wmi
+            c = wmi.WMI()
+            gpus = c.Win32_VideoController()
+            if not gpus:
+                raise RuntimeError("no GPU found via WMI")
+            # Prefer dedicated GPU
+            self._name = "Unknown GPU"
+            for gpu in gpus:
+                name = str(getattr(gpu, "Name", "") or "")
+                if name:
+                    self._name = name
+                    # Keep going to find a non-integrated one
+                    name_upper = name.upper()
+                    is_integrated = any(kw in name_upper for kw in (
+                        "INTEL", "MICROSOFT BASIC", "VEGA GRAPHICS"
+                    ))
+                    if not is_integrated:
+                        break
+        finally:
+            if _com_inited:
+                try:
+                    import pythoncom
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
     def get_name(self) -> str:
         return self._name

@@ -14,6 +14,14 @@ from optimize.optimizer_service import (
     get_memory_breakdown,
     check_has_ssd,
     get_foreground_game_process,
+    stabilize_network,
+    get_network_status,
+    flush_dns_cache,
+    optimize_dns_servers,
+    disable_network_power_saving,
+    disable_network_throttling,
+    optimize_tcp_settings,
+    reset_network_stack,
 )
 from optimize.ai_boost_service import get_ai_boost_service
 from ui.theme_manager import is_cyber_mode, get_theme, get_font, PERFORMANCE_THEME, CYBER_THEME
@@ -54,22 +62,10 @@ class OptimizeView(ctk.CTkFrame):
 
         # Backward compatibility for any external reference
         self.ram_label = self.subtitle_label
-
-        # Toggle for Advanced Mode
         self.advanced_mode = ctk.BooleanVar(value=False)
-        self.mode_switch = ctk.CTkSwitch(
-            self.header_frame,
-            text="[ ADVANCED PURGE OPS ]" if is_cyber else "Advanced Process Cleaner",
-            variable=self.advanced_mode,
-            command=self._toggle_mode,
-            progress_color=theme["accent_cyan"],
-            button_color="#ffffff",
-            font=get_font(12, "bold")
-        )
-        self.mode_switch.grid(row=0, column=1, rowspan=2, sticky="e")
 
-        # ── 1-Click Boost UI (Default) ─────────────────────────
-        self.basic_frame = ctk.CTkFrame(self, fg_color="transparent")
+        # ── Game Booster Dashboard UI ──────────────────────────
+        self.basic_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.basic_frame.grid(row=1, column=0, sticky="nsew")
         self.basic_frame.grid_columnconfigure(0, weight=1)
         self.basic_frame.grid_rowconfigure(0, weight=0)  # HUD banner
@@ -77,6 +73,7 @@ class OptimizeView(ctk.CTkFrame):
         self.basic_frame.grid_rowconfigure(2, weight=0)  # Bottom status pill
 
         # AI Sentinel Background Service
+        self._telemetry_stop = threading.Event()
         self.ai_service = get_ai_boost_service()
         self.ai_service.set_callback(self._on_ai_status_update)
 
@@ -163,6 +160,7 @@ class OptimizeView(ctk.CTkFrame):
         self.btn_container.grid_columnconfigure(1, weight=1)
         self.btn_container.grid_rowconfigure(0, weight=1)
         self.btn_container.grid_rowconfigure(1, weight=1)
+        self.btn_container.grid_rowconfigure(2, weight=0)  # Network row
 
         # ── Card 1: 1-Click Boost (standby clear + trim) ──
         self.boost_card = ctk.CTkFrame(
@@ -206,7 +204,7 @@ class OptimizeView(ctk.CTkFrame):
             font=get_font(11, "normal"),
             text_color=theme["text_secondary"],
             justify="left",
-            wraplength=290
+            wraplength=340
         )
         self.boost_desc.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
 
@@ -223,12 +221,12 @@ class OptimizeView(ctk.CTkFrame):
         self.boost_btn = ctk.CTkButton(
             self.boost_card,
             text="⚡ PURGE STANDBY RAM NOW" if is_cyber else "Flush RAM Now",
-            font=get_font(13, "bold"),
+            font=get_font(12, "bold"),
             fg_color=theme["action_btn_fg"],
             hover_color=theme["action_btn_hover"],
             text_color=theme["action_btn_text"],
-            height=38,
-            corner_radius=19 if is_cyber else 8,
+            height=36,
+            corner_radius=18 if is_cyber else 8,
             command=self._run_auto_boost
         )
         self.boost_btn.grid(row=3, column=0, padx=14, pady=(0, 12), sticky="ew")
@@ -275,7 +273,7 @@ class OptimizeView(ctk.CTkFrame):
             font=get_font(11, "normal"),
             text_color=theme["text_secondary"],
             justify="left",
-            wraplength=290
+            wraplength=340
         )
         self.ai_desc.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
 
@@ -289,18 +287,40 @@ class OptimizeView(ctk.CTkFrame):
         )
         self.ai_status_badge.pack(padx=10, pady=4, anchor="w")
 
+        # Row 3: Action button + Diagnostics button paired side-by-side
+        self.ai_btn_frame = ctk.CTkFrame(self.ai_card, fg_color="transparent")
+        self.ai_btn_frame.grid(row=3, column=0, padx=14, pady=(0, 12), sticky="ew")
+        self.ai_btn_frame.grid_columnconfigure(0, weight=1)
+        self.ai_btn_frame.grid_columnconfigure(1, weight=0)
+
         self.ai_action_btn = ctk.CTkButton(
-            self.ai_card,
-            text="⚡ ENGAGE AI SENTINEL" if not self.ai_service.is_running else "⏹ DISENGAGE SENTINEL",
-            font=get_font(13, "bold"),
+            self.ai_btn_frame,
+            text="⚡ ACTIVATE SENTINEL" if not self.ai_service.is_running else "⏹ DEACTIVATE SENTINEL",
+            font=get_font(12, "bold"),
             fg_color=theme["accent_purple"] if (is_cyber and not self.ai_service.is_running) else ("#00ff9f" if is_cyber else ("#00aa00" if self.ai_service.is_running else "#262626")),
             hover_color="#9333ea" if (is_cyber and not self.ai_service.is_running) else ("#34d399" if is_cyber else ("#008800" if self.ai_service.is_running else "#333333")),
             text_color="#ffffff" if (not is_cyber or not self.ai_service.is_running) else "#020617",
-            height=38,
-            corner_radius=19 if is_cyber else 8,
+            height=36,
+            corner_radius=18 if is_cyber else 8,
             command=self._toggle_ai_sentinel_btn
         )
-        self.ai_action_btn.grid(row=3, column=0, padx=14, pady=(0, 12), sticky="ew")
+        self.ai_action_btn.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+
+        self.ai_diag_btn = ctk.CTkButton(
+            self.ai_btn_frame,
+            text="🩺 DIAG" if is_cyber else "🩺 Diag",
+            font=get_font(11, "bold"),
+            fg_color=theme["bg_card_inner"],
+            hover_color="#1e293b" if is_cyber else "#222222",
+            text_color=theme["accent_cyan"] if is_cyber else theme["text_secondary"],
+            border_width=1,
+            border_color=theme.get("border_glow", "#333333") if is_cyber else "#333333",
+            width=78,
+            height=36,
+            corner_radius=18 if is_cyber else 8,
+            command=self._open_sentinel_diagnostics
+        )
+        self.ai_diag_btn.grid(row=0, column=1, sticky="e")
 
         # ── Card 3: Process Terminator ──
         self.killer_card = ctk.CTkFrame(
@@ -344,7 +364,7 @@ class OptimizeView(ctk.CTkFrame):
             font=get_font(11, "normal"),
             text_color=theme["text_secondary"],
             justify="left",
-            wraplength=290
+            wraplength=340
         )
         self.killer_desc.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
 
@@ -361,12 +381,12 @@ class OptimizeView(ctk.CTkFrame):
         self.process_killer_btn = ctk.CTkButton(
             self.killer_card,
             text="🎯 BROWSE RUNNING PROCESSES" if is_cyber else "Browse Processes",
-            font=get_font(13, "bold"),
+            font=get_font(12, "bold"),
             fg_color="#e11d48" if is_cyber else "#8b1515",
             hover_color="#f43f5e" if is_cyber else "#aa1818",
             text_color="#ffffff",
-            height=38,
-            corner_radius=19 if is_cyber else 8,
+            height=36,
+            corner_radius=18 if is_cyber else 8,
             command=self._open_process_killer
         )
         self.process_killer_btn.grid(row=3, column=0, padx=14, pady=(0, 12), sticky="ew")
@@ -413,7 +433,7 @@ class OptimizeView(ctk.CTkFrame):
             font=get_font(11, "normal"),
             text_color=theme["text_secondary"],
             justify="left",
-            wraplength=290
+            wraplength=340
         )
         self.sysmain_desc.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
 
@@ -430,17 +450,83 @@ class OptimizeView(ctk.CTkFrame):
         self.sysmain_btn = ctk.CTkButton(
             self.sysmain_card,
             text="⚙️ CONFIGURE SYSMAIN SERVICE" if is_cyber else "Configure SysMain",
-            font=get_font(13, "bold"),
+            font=get_font(12, "bold"),
             fg_color="#0f172a" if is_cyber else "#262626",
             hover_color="#1e293b" if is_cyber else "#333333",
             text_color=theme["accent_cyan"] if is_cyber else "#ffffff",
             border_width=1 if is_cyber else 0,
             border_color="#00f0ff" if is_cyber else "#333333",
-            height=38,
-            corner_radius=19 if is_cyber else 8,
+            height=36,
+            corner_radius=18 if is_cyber else 8,
             command=self._open_sysmain_dialog
         )
         self.sysmain_btn.grid(row=3, column=0, padx=14, pady=(0, 12), sticky="ew")
+
+        # ── Card 5: Network Stabilization (spans both columns) ──
+        self.net_card = ctk.CTkFrame(
+            self.btn_container,
+            fg_color=theme["bg_card"],
+            corner_radius=14,
+            border_width=1,
+            border_color=theme.get("border_green", "#1e1e1e") if is_cyber else "#1e1e1e"
+        )
+        self.net_card.grid(row=2, column=0, columnspan=2, padx=6, pady=(3, 5), sticky="ew")
+        self.net_card.grid_columnconfigure(0, weight=1)
+        self.net_card.grid_columnconfigure(1, weight=0)
+
+        # Left side: title + status
+        self.net_info_frame = ctk.CTkFrame(self.net_card, fg_color="transparent")
+        self.net_info_frame.grid(row=0, column=0, padx=14, pady=10, sticky="ew")
+
+        self.net_title = ctk.CTkLabel(
+            self.net_info_frame,
+            text="🌐 NETWORK STABILIZER" if is_cyber else "🌐 Network Stabilizer",
+            font=get_font(14, "bold"),
+            text_color=theme.get("accent_green", "#00ff9f") if is_cyber else theme["text_title"]
+        )
+        self.net_title.pack(anchor="w")
+
+        self.net_status_label = ctk.CTkLabel(
+            self.net_info_frame,
+            text="○ Flush DNS · Disable Throttling · Optimize TCP · Fix Latency",
+            font=get_font(10, "normal"),
+            text_color=theme["text_secondary"]
+        )
+        self.net_status_label.pack(anchor="w", pady=(2, 0))
+
+        # Right side: buttons
+        self.net_btn_frame = ctk.CTkFrame(self.net_card, fg_color="transparent")
+        self.net_btn_frame.grid(row=0, column=1, padx=(0, 14), pady=10, sticky="e")
+
+        self.net_quick_btn = ctk.CTkButton(
+            self.net_btn_frame,
+            text="⚡ STABILIZE" if is_cyber else "Stabilize",
+            font=get_font(12, "bold"),
+            fg_color=theme.get("accent_green", "#00ff9f") if is_cyber else "#1a6b3a",
+            hover_color="#34d399" if is_cyber else "#22804a",
+            text_color="#020617" if is_cyber else "#ffffff",
+            width=100,
+            height=32,
+            corner_radius=16 if is_cyber else 6,
+            command=self._run_quick_network_stabilize
+        )
+        self.net_quick_btn.pack(side="left", padx=(0, 6))
+
+        self.net_advanced_btn = ctk.CTkButton(
+            self.net_btn_frame,
+            text="⚙️ ADVANCED" if is_cyber else "⚙️ Advanced",
+            font=get_font(11, "bold"),
+            fg_color=theme["bg_card_inner"],
+            hover_color="#1e293b" if is_cyber else "#222222",
+            text_color=theme["accent_cyan"] if is_cyber else theme["text_secondary"],
+            border_width=1,
+            border_color=theme.get("border_green", "#333333") if is_cyber else "#333333",
+            width=100,
+            height=32,
+            corner_radius=16 if is_cyber else 6,
+            command=self._open_network_dialog
+        )
+        self.net_advanced_btn.pack(side="left")
 
         # ── Bottom Status Pill Bar ──
         self.status_bar_frame = ctk.CTkFrame(
@@ -460,51 +546,12 @@ class OptimizeView(ctk.CTkFrame):
         )
         self.basic_status_label.pack(padx=14, pady=6, anchor="w")
 
-        # ── Advanced UI (Hidden by default) ────────────────────
-        self.advanced_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.advanced_frame.grid_columnconfigure(0, weight=1)
-        self.advanced_frame.grid_rowconfigure(0, weight=0)
-        self.advanced_frame.grid_rowconfigure(1, weight=1)
-        self.advanced_frame.grid_rowconfigure(2, weight=0)
-
-        # Advanced subheader
-        self.adv_subheader = ctk.CTkFrame(self.advanced_frame, fg_color="transparent")
-        self.adv_subheader.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        self.adv_subheader.grid_columnconfigure(0, weight=1)
-        
-        self.adv_result_label = ctk.CTkLabel(
-            self.adv_subheader, text="", font=get_font(14, "bold"), text_color=theme["accent_green"]
-        )
-        self.adv_result_label.grid(row=0, column=0, sticky="w")
-        
-        self.rescan_btn = ctk.CTkButton(
-            self.adv_subheader, text="Rescan Processes", width=140,
-            fg_color=theme["nav_btn_fg"] if is_cyber_mode() else "#333333",
-            hover_color=theme["nav_btn_hover"] if is_cyber_mode() else "#444444",
-            text_color=theme["nav_btn_text"],
-            font=get_font(13, "bold"),
-            command=self._load_advanced_processes
-        )
-        self.rescan_btn.grid(row=0, column=1, sticky="e")
-
-        self.list_frame = ctk.CTkScrollableFrame(self.advanced_frame, fg_color=theme["bg_card"])
-        self.list_frame.grid(row=1, column=0, padx=0, pady=0, sticky="nsew")
-        self.list_frame.grid_columnconfigure(0, weight=1)
-
-        self.checkboxes = []
-        
-        self.terminate_btn = ctk.CTkButton(
-            self.advanced_frame,
-            text="⚡ TERMINATE SELECTED" if is_cyber_mode() else "Terminate Selected",
-            font=get_font(15, "bold"),
-            fg_color=theme["action_btn_fg"],
-            hover_color=theme["action_btn_hover"],
-            text_color=theme["action_btn_text"],
-            height=40,
-            corner_radius=20 if is_cyber_mode() else 8,
-            command=self._confirm_termination
-        )
-        self.terminate_btn.grid(row=2, column=0, pady=(20, 0), sticky="ew")
+        # ── In-Window Subview Panels (Hidden Initially) ──
+        self._pk_cbs = []
+        self._init_process_killer_frame(theme, is_cyber)
+        self._init_diagnostics_frame(theme, is_cyber)
+        self._init_network_frame(theme, is_cyber)
+        self._init_sysmain_frame(theme, is_cyber)
 
         # Initial Setup & Telemetry Daemon
         self._update_ram_label()
@@ -515,7 +562,6 @@ class OptimizeView(ctk.CTkFrame):
         """Update optimize view styling when theme mode toggles."""
         theme = CYBER_THEME if is_cyber else PERFORMANCE_THEME
         self.configure(fg_color=theme["bg_main"])
-        self.list_frame.configure(fg_color=theme["bg_card"])
 
         # Header
         self.title_label.configure(
@@ -527,11 +573,6 @@ class OptimizeView(ctk.CTkFrame):
             text="⚡ HARDWARE TIMER LOCKED · HIGH-PRECISION OS PACING ENGAGED" if is_cyber else "Hardware timer optimization, standby memory flush, and game stability",
             font=get_font(12, "normal"),
             text_color=theme["text_secondary"]
-        )
-        self.mode_switch.configure(
-            text="[ ADVANCED PURGE OPS ]" if is_cyber else "Advanced Process Mode",
-            progress_color=theme["accent_cyan"],
-            font=get_font(12, "bold")
         )
 
         # HUD Banner
@@ -608,11 +649,11 @@ class OptimizeView(ctk.CTkFrame):
         )
         self.boost_btn.configure(
             text="⚡ PURGE STANDBY RAM NOW" if is_cyber else "Flush RAM Now",
-            font=get_font(13, "bold"),
+            font=get_font(12, "bold"),
             fg_color=theme["action_btn_fg"],
             hover_color=theme["action_btn_hover"],
             text_color=theme["action_btn_text"],
-            corner_radius=19 if is_cyber else 8
+            corner_radius=18 if is_cyber else 8
         )
 
         # Card 2: AI Sentinel
@@ -635,22 +676,32 @@ class OptimizeView(ctk.CTkFrame):
         )
         if not self.ai_service.is_running:
             self.ai_action_btn.configure(
-                text="⚡ ENGAGE AI SENTINEL" if is_cyber else "Activate Sentinel",
-                font=get_font(13, "bold"),
+                text="⚡ ACTIVATE SENTINEL" if is_cyber else "ACTIVATE SENTINEL",
+                font=get_font(12, "bold"),
                 fg_color=theme["accent_purple"] if is_cyber else "#262626",
                 hover_color="#9333ea" if is_cyber else "#333333",
                 text_color="#ffffff",
-                corner_radius=19 if is_cyber else 8
+                corner_radius=18 if is_cyber else 8
             )
         else:
             self.ai_action_btn.configure(
-                text="⏹ DISENGAGE SENTINEL" if is_cyber else "Deactivate Sentinel",
-                font=get_font(13, "bold"),
+                text="⏹ DEACTIVATE SENTINEL" if is_cyber else "DEACTIVATE SENTINEL",
+                font=get_font(12, "bold"),
                 fg_color="#00ff9f" if is_cyber else "#00aa00",
                 hover_color="#00d685" if is_cyber else "#008800",
                 text_color="#05060f" if is_cyber else "#ffffff",
-                corner_radius=19 if is_cyber else 8
+                corner_radius=18 if is_cyber else 8
             )
+
+        self.ai_diag_btn.configure(
+            text="🩺 DIAG" if is_cyber else "🩺 Diag",
+            font=get_font(11, "bold"),
+            fg_color=theme["bg_card_inner"],
+            hover_color="#1e293b" if is_cyber else "#222222",
+            text_color=theme["accent_cyan"] if is_cyber else theme["text_secondary"],
+            border_color=theme.get("border_glow", "#333333") if is_cyber else "#333333",
+            corner_radius=18 if is_cyber else 8
+        )
 
         # Card 3: Killer
         self.killer_title.configure(
@@ -669,11 +720,11 @@ class OptimizeView(ctk.CTkFrame):
         self.killer_chip_label.configure(font=get_font(11, "bold"), text_color=theme["text_primary"])
         self.process_killer_btn.configure(
             text="🎯 BROWSE RUNNING PROCESSES" if is_cyber else "Browse Processes",
-            font=get_font(13, "bold"),
+            font=get_font(12, "bold"),
             fg_color="#e11d48" if is_cyber else "#8b1515",
             hover_color="#f43f5e" if is_cyber else "#aa1818",
             text_color="#ffffff",
-            corner_radius=19 if is_cyber else 8
+            corner_radius=18 if is_cyber else 8
         )
 
         # Card 4: SysMain
@@ -693,62 +744,201 @@ class OptimizeView(ctk.CTkFrame):
         self.sysmain_chip_label.configure(font=get_font(11, "bold"))
         self.sysmain_btn.configure(
             text="⚙️ CONFIGURE SYSMAIN SERVICE" if is_cyber else "Configure SysMain",
-            font=get_font(13, "bold"),
+            font=get_font(12, "bold"),
             fg_color="#0f172a" if is_cyber else "#262626",
             hover_color="#1e293b" if is_cyber else "#333333",
             text_color=theme["accent_cyan"] if is_cyber else "#ffffff",
             border_width=1 if is_cyber else 0,
             border_color="#00f0ff" if is_cyber else "#333333",
-            corner_radius=19 if is_cyber else 8
+            corner_radius=18 if is_cyber else 8
         )
 
-        # Status Bar Frame
-        self.status_bar_frame.configure(
+        # Card 5: Network Stabilizer
+        self.net_card.configure(
             fg_color=theme["bg_card"],
-            border_color="#1a2b5e" if is_cyber else "#1e1e1e"
+            border_color=theme.get("border_green", "#10b981") if is_cyber else "#1e1e1e",
+            corner_radius=14
         )
-        self.basic_status_label.configure(
-            text="> SYSTEM_STATUS // ⚡ Ready · Select an optimization operation or engage AI Sentinel for autonomous frame pacing." if is_cyber else "⚡ Ready · Select an action above or activate AI Sentinel for auto-pilot frame pacing.",
-            font=get_font(12, "bold"),
+        self.net_title.configure(
+            text="🌐 NETWORK STABILIZER" if is_cyber else "🌐 Network Stabilizer",
+            font=get_font(14, "bold"),
+            text_color=theme.get("accent_green", "#00ff9f") if is_cyber else theme["text_title"]
+        )
+        self.net_status_label.configure(
+            font=get_font(10, "normal"),
             text_color=theme["text_secondary"]
         )
+        self.net_quick_btn.configure(
+            text="⚡ STABILIZE" if is_cyber else "Stabilize",
+            font=get_font(12, "bold"),
+            fg_color=theme.get("accent_green", "#00ff9f") if is_cyber else "#1a6b3a",
+            hover_color="#34d399" if is_cyber else "#22804a",
+            text_color="#020617" if is_cyber else "#ffffff",
+            corner_radius=16 if is_cyber else 6
+        )
+        self.net_advanced_btn.configure(
+            text="⚙️ ADVANCED" if is_cyber else "⚙️ Advanced",
+            font=get_font(11, "bold"),
+            fg_color=theme["bg_card_inner"],
+            hover_color="#1e293b" if is_cyber else "#222222",
+            text_color=theme["accent_cyan"] if is_cyber else theme["text_secondary"],
+            border_color=theme.get("border_green", "#333333") if is_cyber else "#333333",
+            corner_radius=16 if is_cyber else 6
+        )
 
-        # Advanced View
-        self.rescan_btn.configure(
-            fg_color=theme["nav_btn_fg"] if is_cyber else "#333333",
-            hover_color=theme["nav_btn_hover"] if is_cyber else "#444444",
-            text_color=theme["nav_btn_text"],
-            font=get_font(13, "bold")
-        )
-        self.terminate_btn.configure(
-            text="⚡ TERMINATE SELECTED" if is_cyber else "Terminate Selected",
-            font=get_font(15, "bold"),
-            fg_color=theme["action_btn_fg"],
-            hover_color=theme["action_btn_hover"],
-            text_color=theme["action_btn_text"],
-            corner_radius=20 if is_cyber else 8
-        )
+        # In-Window Subview Panels
+        if hasattr(self, "process_killer_frame"):
+            self.process_killer_frame.configure(fg_color=theme["bg_main"])
+            self.pk_back_btn.configure(
+                text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#00f0ff" if is_cyber else "#ffffff",
+                corner_radius=17 if is_cyber else 8
+            )
+            self.pk_title_lbl.configure(
+                text="🎯 PROCESS TERMINATOR // PURGE OPS" if is_cyber else "🎯 Process Terminator",
+                text_color="#f43f5e" if is_cyber else theme["text_title"]
+            )
+            self.pk_subtitle_lbl.configure(
+                text="// Inspect running tasks, identify RAM consumers, and terminate bloatware" if is_cyber else "Inspect running tasks, identify RAM consumers, and terminate bloatware.",
+                text_color=theme["text_secondary"]
+            )
+            self.pk_select_all_btn.configure(
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#ffffff",
+                corner_radius=16 if is_cyber else 6
+            )
+            self.pk_rescan_btn.configure(
+                text="⚡ RESCAN" if is_cyber else "Rescan",
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#00f0ff" if is_cyber else theme["nav_btn_text"],
+                corner_radius=16 if is_cyber else 6
+            )
+            self.pk_scroll.configure(
+                fg_color=theme["bg_card"],
+                border_color="#f43f5e" if is_cyber else "#1e1e1e"
+            )
+            self.pk_bottom_frame.configure(
+                fg_color=theme["bg_card"],
+                border_color="#f43f5e" if is_cyber else "#1e1e1e"
+            )
+            self.pk_summary_lbl.configure(text_color=theme["text_primary"])
+            self.pk_status_lbl.configure(text_color=theme["text_secondary"])
+            self.pk_term_btn.configure(
+                corner_radius=19 if is_cyber else 8
+            )
+
+        if hasattr(self, "diagnostics_frame"):
+            self.diagnostics_frame.configure(fg_color=theme["bg_main"])
+            self.diag_back_btn.configure(
+                text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#00f0ff" if is_cyber else "#ffffff",
+                corner_radius=17 if is_cyber else 8
+            )
+            self.diag_title_lbl.configure(
+                text="🩺 SENTINEL HEALTH DIAGNOSTICS" if is_cyber else "🩺 Sentinel Health Check",
+                text_color="#00f0ff" if is_cyber else theme["text_title"]
+            )
+            self.diag_rerun_btn.configure(
+                text="⚡ RE-RUN" if is_cyber else "Re-run",
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#00f0ff" if is_cyber else theme["nav_btn_text"],
+                corner_radius=16 if is_cyber else 6
+            )
+            self.diag_summary_frame.configure(
+                fg_color=theme["bg_card"],
+                border_color=theme.get("border_glow", "#1e1e1e") if is_cyber else "#1e1e1e"
+            )
+            self.diag_scroll.configure(
+                fg_color=theme["bg_card"],
+                border_color=theme.get("border_card", "#1e1e1e")
+            )
+
+        if hasattr(self, "network_frame"):
+            self.network_frame.configure(fg_color=theme["bg_main"])
+            self.net_back_btn.configure(
+                text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#00f0ff" if is_cyber else "#ffffff",
+                corner_radius=17 if is_cyber else 8
+            )
+            self.net_top_title.configure(
+                text="🌐 NETWORK STABILIZATION CENTER" if is_cyber else "🌐 Network Stabilizer",
+                text_color="#00f0ff" if is_cyber else theme["text_title"]
+            )
+            self.net_probe_btn.configure(
+                text="⚡ RE-PROBE" if is_cyber else "Re-probe",
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#00f0ff" if is_cyber else theme["nav_btn_text"],
+                corner_radius=16 if is_cyber else 6
+            )
+            self.net_status_card.configure(
+                fg_color=theme["bg_card"],
+                border_color=theme.get("border_glow", "#1e1e1e") if is_cyber else "#1e1e1e"
+            )
+            self.net_scroll.configure(
+                fg_color=theme["bg_card"],
+                border_color=theme.get("border_card", "#1e1e1e")
+            )
+
+        if hasattr(self, "sysmain_frame"):
+            self.sysmain_frame.configure(fg_color=theme["bg_main"])
+            self.sm_back_btn.configure(
+                text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+                fg_color="#1e293b" if is_cyber else "#333333",
+                hover_color="#334155" if is_cyber else "#444444",
+                text_color="#00f0ff" if is_cyber else "#ffffff",
+                corner_radius=17 if is_cyber else 8
+            )
+            self.sm_top_title.configure(
+                text="💾 SYSMAIN STORAGE TWEAKER" if is_cyber else "💾 SysMain (Superfetch)",
+                text_color=theme["accent_amber"] if is_cyber else theme["text_title"]
+            )
+            self.sm_info_card.configure(
+                fg_color=theme["bg_card"],
+                border_color=theme.get("border_card", "#1e1e1e")
+            )
+            self.sm_status_card.configure(
+                fg_color=theme["bg_card"],
+                border_color="#fbbf24" if is_cyber else "#1e1e1e"
+            )
+
         self._update_ram_label()
+
+    def destroy(self):
+        """Clean up background telemetry thread and Sentinel callback."""
+        if hasattr(self, "_telemetry_stop"):
+            self._telemetry_stop.set()
+        if hasattr(self, "ai_service") and self.ai_service:
+            self.ai_service.set_callback(None)
+        super().destroy()
 
     # ── Live Telemetry & Real-Time Refresher Daemon ────────────
 
     def _start_telemetry_loop(self):
         """Background thread updating the HUD memory telemetry every 3s."""
         def _worker():
-            while True:
-                try:
-                    if not self.winfo_exists():
-                        break
-                except Exception:
-                    break
-
+            while not self._telemetry_stop.is_set():
                 try:
                     mb = get_memory_breakdown()
                     ai_stat = self.ai_service.get_status()
-                    self.after(0, self._update_hud_display, mb, ai_stat)
+                    try:
+                        if not self._telemetry_stop.is_set() and self.winfo_exists():
+                            self.after(0, self._update_hud_display, mb, ai_stat)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-                time.sleep(3.0)
+                if self._telemetry_stop.wait(3.0):
+                    break
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
@@ -792,7 +982,11 @@ class OptimizeView(ctk.CTkFrame):
             try:
                 sm_status = get_sysmain_status()
                 has_ssd = check_has_ssd()
-                self.after(0, self._render_sysmain_chip, sm_status, has_ssd)
+                try:
+                    if hasattr(self, "_telemetry_stop") and not self._telemetry_stop.is_set() and self.winfo_exists():
+                        self.after(0, self._render_sysmain_chip, sm_status, has_ssd)
+                except Exception:
+                    pass
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
@@ -878,10 +1072,223 @@ class OptimizeView(ctk.CTkFrame):
                 text_color=theme["text_muted"]
             )
 
+    # ── In-Window Sentinel Diagnostics View ────────────────────
+
+    def _init_diagnostics_frame(self, theme: dict, is_cyber: bool):
+        """Construct the in-window Sentinel Diagnostics panel."""
+        self.diagnostics_frame = ctk.CTkFrame(self, fg_color="transparent")
+
+        # Top Bar: Back Button, Title, Subtitle, and Action Controls
+        self.diag_top_bar = ctk.CTkFrame(self.diagnostics_frame, fg_color="transparent")
+        self.diag_top_bar.pack(fill="x", padx=15, pady=(12, 6))
+        self.diag_top_bar.grid_columnconfigure(1, weight=1)
+
+        self.diag_back_btn = ctk.CTkButton(
+            self.diag_top_bar,
+            text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+            font=get_font(12, "bold"),
+            fg_color="#1e293b" if is_cyber else "#333333",
+            hover_color="#334155" if is_cyber else "#444444",
+            text_color="#00f0ff" if is_cyber else "#ffffff",
+            width=190,
+            height=34,
+            corner_radius=17 if is_cyber else 8,
+            command=self.show_dashboard
+        )
+        self.diag_back_btn.grid(row=0, column=0, rowspan=2, padx=(0, 14), sticky="w")
+
+        self.diag_title_lbl = ctk.CTkLabel(
+            self.diag_top_bar,
+            text="🩺 SENTINEL HEALTH DIAGNOSTICS" if is_cyber else "🩺 Sentinel Health Check",
+            font=get_font(18, "bold"),
+            text_color="#00f0ff" if is_cyber else theme["text_title"],
+            anchor="w"
+        )
+        self.diag_title_lbl.grid(row=0, column=1, sticky="w")
+
+        self.diag_subtitle_lbl = ctk.CTkLabel(
+            self.diag_top_bar,
+            text="// Autonomous watchdog diagnostics, kernel timer lock & subsystem health verification" if is_cyber else "Autonomous watchdog diagnostics and subsystem health probe.",
+            font=get_font(11, "normal"),
+            text_color=theme["text_secondary"],
+            anchor="w"
+        )
+        self.diag_subtitle_lbl.grid(row=1, column=1, sticky="w", pady=(2, 0))
+
+        self.diag_rerun_btn = ctk.CTkButton(
+            self.diag_top_bar,
+            text="⚡ RE-RUN" if is_cyber else "Re-run",
+            font=get_font(12, "bold"),
+            fg_color="#1e293b" if is_cyber else "#333333",
+            hover_color="#334155" if is_cyber else "#444444",
+            text_color="#00f0ff" if is_cyber else theme["nav_btn_text"],
+            width=100,
+            height=32,
+            corner_radius=16 if is_cyber else 6,
+            command=self._diag_run
+        )
+        self.diag_rerun_btn.grid(row=0, column=2, rowspan=2, sticky="e")
+
+        # Summary banner
+        self.diag_summary_frame = ctk.CTkFrame(
+            self.diagnostics_frame,
+            fg_color=theme["bg_card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=theme.get("border_glow", "#1e1e1e") if is_cyber else "#1e1e1e"
+        )
+        self.diag_summary_frame.pack(fill="x", padx=15, pady=(4, 6))
+
+        self.diag_summary_label = ctk.CTkLabel(
+            self.diag_summary_frame,
+            text="⏳ Running diagnostics…",
+            font=get_font(13, "bold"),
+            text_color=theme["accent_cyan"] if is_cyber else theme["text_primary"]
+        )
+        self.diag_summary_label.pack(padx=14, pady=10)
+
+        # Scrollable results area
+        self.diag_scroll = ctk.CTkScrollableFrame(
+            self.diagnostics_frame,
+            fg_color=theme["bg_card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=theme.get("border_card", "#1e1e1e")
+        )
+        self.diag_scroll.pack(fill="both", expand=True, padx=15, pady=(4, 12))
+        self.diag_scroll.grid_columnconfigure(0, weight=0)  # icon
+        self.diag_scroll.grid_columnconfigure(1, weight=1)  # label + detail
+        self.diag_scroll.grid_columnconfigure(2, weight=0)  # badge
+
+    def show_diagnostics(self):
+        """Transition into the in-window Sentinel Diagnostics panel."""
+        self._switch_to_subview(self.diagnostics_frame)
+        self._diag_run()
+
+    def _open_sentinel_diagnostics(self):
+        """Open diagnostic health-check panel in the main window."""
+        self.show_diagnostics()
+
+    def _diag_run(self, sync: bool = False):
+        """Probe all Sentinel subsystems in background and display results."""
+        theme = get_theme()
+        is_cyber = is_cyber_mode()
+
+        self.diag_summary_label.configure(
+            text="⏳ Running diagnostics…",
+            text_color=theme["accent_cyan"] if is_cyber else theme["text_primary"]
+        )
+        self.diag_subtitle_lbl.configure(
+            text="// Autonomous watchdog diagnostics, kernel timer lock & subsystem health verification" if is_cyber else "Probing all subsystems…"
+        )
+
+        for child in self.diag_scroll.winfo_children():
+            child.destroy()
+
+        def _worker():
+            report = self.ai_service.run_diagnostics()
+            try:
+                self.after(0, lambda: self._diag_render(report))
+            except Exception:
+                if sync:
+                    self._diag_render(report)
+
+        if sync:
+            _worker()
+        else:
+            threading.Thread(target=_worker, daemon=True, name="SentinelDiag").start()
+
+    def _diag_render(self, report: dict):
+        """Render diagnostic report cards on the main thread."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        theme = get_theme()
+        is_cyber = is_cyber_mode()
+
+        overall = report.get("overall", "UNKNOWN")
+        p, f, w = report.get("passed", 0), report.get("failed", 0), report.get("warned", 0)
+
+        if overall == "HEALTHY":
+            icon = "✅"
+            color = theme["accent_green"] if is_cyber else "#00ff00"
+            verdict = "ALL SYSTEMS OPERATIONAL"
+        else:
+            icon = "⚠️"
+            color = "#fbbf24" if f == 0 else "#f43f5e"
+            verdict = "SYSTEM DEGRADED" if f > 0 else "PARTIAL WARNINGS"
+
+        self.diag_summary_label.configure(
+            text=f"{icon}  {verdict}  —  {p} Passed · {w} Warn · {f} Failed",
+            text_color=color
+        )
+        self.diag_subtitle_lbl.configure(
+            text="// Subsystem diagnostics complete · Watchdog thread active" if is_cyber else "Diagnostics complete."
+        )
+
+        STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️"}
+        STATUS_COLORS = {
+            "PASS": theme["accent_green"] if is_cyber else "#00cc66",
+            "FAIL": "#f43f5e",
+            "WARN": "#fbbf24",
+        }
+
+        for idx, check in enumerate(report.get("checks", [])):
+            status = check["status"]
+            s_icon = STATUS_ICONS.get(status, "❓")
+            s_color = STATUS_COLORS.get(status, theme["text_secondary"])
+
+            # Status icon
+            icon_lbl = ctk.CTkLabel(
+                self.diag_scroll,
+                text=s_icon,
+                font=get_font(16, "bold"),
+                width=28
+            )
+            icon_lbl.grid(row=idx, column=0, padx=(10, 4), pady=6, sticky="w")
+
+            # Label + detail column
+            info_frame = ctk.CTkFrame(self.diag_scroll, fg_color="transparent")
+            info_frame.grid(row=idx, column=1, padx=4, pady=6, sticky="ew")
+
+            name_lbl = ctk.CTkLabel(
+                info_frame,
+                text=check["label"],
+                font=get_font(13, "bold"),
+                text_color=theme["text_primary"]
+            )
+            name_lbl.pack(anchor="w")
+
+            detail_lbl = ctk.CTkLabel(
+                info_frame,
+                text=check["detail"],
+                font=get_font(10, "normal"),
+                text_color=theme["text_secondary"],
+                wraplength=480
+            )
+            detail_lbl.pack(anchor="w")
+
+            # Status badge pill
+            badge = ctk.CTkLabel(
+                self.diag_scroll,
+                text=f" {status} ",
+                font=get_font(10, "bold"),
+                fg_color=s_color,
+                text_color="#000000" if status != "FAIL" else "#ffffff",
+                corner_radius=6,
+                padx=6,
+                pady=2
+            )
+            badge.grid(row=idx, column=2, padx=(4, 10), pady=6, sticky="e")
+
     def _on_ai_status_update(self, data: dict):
         """Callback invoked by background watchdog on state changes."""
         try:
-            self.after(0, self._render_ai_status, data)
+            if hasattr(self, "_telemetry_stop") and not self._telemetry_stop.is_set() and self.winfo_exists():
+                self.after(0, self._render_ai_status, data)
         except Exception:
             pass
 
@@ -968,21 +1375,6 @@ class OptimizeView(ctk.CTkFrame):
                 text=f"● Error: {message}",
                 text_color="#ff4d4f"
             )
-
-    def _toggle_mode(self):
-        theme = get_theme()
-        if self.advanced_mode.get():
-            self.basic_frame.grid_remove()
-            self.advanced_frame.grid(row=1, column=0, padx=20, pady=0, sticky="nsew")
-            self._load_advanced_processes()
-        else:
-            self.advanced_frame.grid_remove()
-            self.basic_frame.grid(row=1, column=0, sticky="nsew")
-            self.basic_status_label.configure(
-                text="⚡ Ready · Select an action above or activate AI Sentinel for auto-pilot frame pacing.",
-                text_color=theme["text_secondary"]
-            )
-
     def _update_ram_label(self):
         ram = get_current_available_ram_mb()
         try:
@@ -993,154 +1385,345 @@ class OptimizeView(ctk.CTkFrame):
             pass
         return ram
 
-    # ── Process Killer Dialog ──────────────────────────────────
+    # ── In-Window Process Killer View ──────────────────────────
 
-    def _open_process_killer(self):
-        """Opens a standalone dialog for browsing and killing processes."""
-        theme = get_theme()
-        is_cyber = is_cyber_mode()
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("🎯 PROCESS TERMINATOR // PURGE OPS" if is_cyber else "Process Killer")
-        dialog.geometry("580x540")
-        dialog.attributes("-topmost", True)
-        dialog.transient(self.winfo_toplevel())
-        dialog.grab_set()
-        dialog.configure(fg_color=theme["bg_main"])
+    def _init_process_killer_frame(self, theme: dict, is_cyber: bool):
+        """Construct the in-window process terminator panel (swapped with basic_frame)."""
+        self.process_killer_frame = ctk.CTkFrame(self, fg_color="transparent")
+        # Initially not gridded; activated via self.show_process_killer()
 
-        # Center dialog
-        dialog.update_idletasks()
-        try:
-            top_w = self.winfo_toplevel()
-            x = max(0, top_w.winfo_x() + (top_w.winfo_width() // 2) - (580 // 2))
-            y = max(0, top_w.winfo_y() + (top_w.winfo_height() // 2) - (540 // 2))
-            dialog.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
+        # Top Bar: Back Button, Title, Subtitle, and Action Controls
+        self.pk_top_bar = ctk.CTkFrame(self.process_killer_frame, fg_color="transparent")
+        self.pk_top_bar.pack(fill="x", padx=15, pady=(12, 6))
+        self.pk_top_bar.grid_columnconfigure(1, weight=1)
 
-        # Header row
-        header = ctk.CTkFrame(dialog, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=(15, 5))
-        header.grid_columnconfigure(0, weight=1)
+        self.pk_back_btn = ctk.CTkButton(
+            self.pk_top_bar,
+            text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+            font=get_font(12, "bold"),
+            fg_color="#1e293b" if is_cyber else "#333333",
+            hover_color="#334155" if is_cyber else "#444444",
+            text_color="#00f0ff" if is_cyber else "#ffffff",
+            width=190,
+            height=34,
+            corner_radius=17 if is_cyber else 8,
+            command=self.show_dashboard
+        )
+        self.pk_back_btn.grid(row=0, column=0, rowspan=2, padx=(0, 14), sticky="w")
 
-        title_lbl = ctk.CTkLabel(
-            header,
-            text="🎯 PROCESS TERMINATOR // PURGE OPS" if is_cyber else "Process Killer",
+        self.pk_title_lbl = ctk.CTkLabel(
+            self.pk_top_bar,
+            text="🎯 PROCESS TERMINATOR // PURGE OPS" if is_cyber else "🎯 Process Terminator",
             font=get_font(18, "bold"),
-            text_color="#f43f5e" if is_cyber else theme["text_title"]
+            text_color="#f43f5e" if is_cyber else theme["text_title"],
+            anchor="w"
         )
-        title_lbl.grid(row=0, column=0, sticky="w")
+        self.pk_title_lbl.grid(row=0, column=1, sticky="w")
 
-        status_lbl = ctk.CTkLabel(
-            header, text="", font=get_font(13, "bold"), text_color=theme["accent_green"]
+        self.pk_subtitle_lbl = ctk.CTkLabel(
+            self.pk_top_bar,
+            text="// Inspect running tasks, identify RAM consumers, and terminate bloatware" if is_cyber else "Inspect running tasks, identify RAM consumers, and terminate bloatware.",
+            font=get_font(11, "normal"),
+            text_color=theme["text_secondary"],
+            anchor="w"
         )
-        status_lbl.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.pk_subtitle_lbl.grid(row=1, column=1, sticky="w", pady=(2, 0))
 
-        rescan = ctk.CTkButton(
-            header, text="⚡ RESCAN" if is_cyber else "Rescan", width=100,
+        # Top right action buttons
+        self.pk_btn_box = ctk.CTkFrame(self.pk_top_bar, fg_color="transparent")
+        self.pk_btn_box.grid(row=0, column=2, rowspan=2, sticky="e")
+
+        self.pk_select_all_btn = ctk.CTkButton(
+            self.pk_btn_box,
+            text="Select All",
+            font=get_font(12, "bold"),
+            fg_color="#1e293b" if is_cyber else "#333333",
+            hover_color="#334155" if is_cyber else "#444444",
+            text_color="#ffffff",
+            width=95,
+            height=32,
+            corner_radius=16 if is_cyber else 6,
+            command=self._pk_toggle_select_all
+        )
+        self.pk_select_all_btn.pack(side="left", padx=(0, 8))
+
+        self.pk_rescan_btn = ctk.CTkButton(
+            self.pk_btn_box,
+            text="⚡ RESCAN" if is_cyber else "Rescan",
+            font=get_font(12, "bold"),
             fg_color="#1e293b" if is_cyber else "#333333",
             hover_color="#334155" if is_cyber else "#444444",
             text_color="#00f0ff" if is_cyber else theme["nav_btn_text"],
-            font=get_font(12, "bold"),
-            corner_radius=15 if is_cyber else 8
+            width=95,
+            height=32,
+            corner_radius=16 if is_cyber else 6,
+            command=self._pk_load_procs
         )
-        rescan.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.pk_rescan_btn.pack(side="left")
 
-        # Scrollable process list
-        scroll = ctk.CTkScrollableFrame(
-            dialog,
+        # Middle Scrollable Process List
+        self.pk_scroll = ctk.CTkScrollableFrame(
+            self.process_killer_frame,
             fg_color=theme["bg_card"],
             border_width=1,
             border_color="#f43f5e" if is_cyber else "#1e1e1e",
             corner_radius=12
         )
-        scroll.pack(fill="both", expand=True, padx=20, pady=10)
-        scroll.grid_columnconfigure(0, weight=1)
+        self.pk_scroll.pack(fill="both", expand=True, padx=15, pady=(4, 8))
+        self.pk_scroll.grid_columnconfigure(0, weight=1)
 
-        dialog_cbs = []
+        # Bottom Action Bar
+        self.pk_bottom_frame = ctk.CTkFrame(
+            self.process_killer_frame,
+            fg_color=theme["bg_card"],
+            corner_radius=12,
+            border_width=1,
+            border_color="#f43f5e" if is_cyber else "#1e1e1e"
+        )
+        self.pk_bottom_frame.pack(fill="x", padx=15, pady=(0, 10))
+        self.pk_bottom_frame.grid_columnconfigure(0, weight=1)
+        self.pk_bottom_frame.grid_columnconfigure(1, weight=0)
 
-        def _load_procs():
-            rescan.configure(state="disabled")
-            for w in scroll.winfo_children():
-                w.destroy()
-            dialog_cbs.clear()
-            ctk.CTkLabel(scroll, text="> SCANNING ACTIVE PROCESSES...", text_color="#00f0ff" if is_cyber else "gray").grid(row=0, column=0, pady=20)
+        self.pk_info_box = ctk.CTkFrame(self.pk_bottom_frame, fg_color="transparent")
+        self.pk_info_box.grid(row=0, column=0, padx=16, pady=8, sticky="w")
 
-            def _worker():
-                procs = get_top_memory_consumers(25)
-                dialog.after(0, _render_procs, procs)
+        self.pk_summary_lbl = ctk.CTkLabel(
+            self.pk_info_box,
+            text="0 processes selected · 0 MB reclaimable",
+            font=get_font(12, "bold"),
+            text_color=theme["text_primary"]
+        )
+        self.pk_summary_lbl.pack(anchor="w")
 
-            threading.Thread(target=_worker, daemon=True).start()
+        self.pk_status_lbl = ctk.CTkLabel(
+            self.pk_info_box,
+            text="Select background apps to terminate without closing game engines",
+            font=get_font(11, "normal"),
+            text_color=theme["text_secondary"]
+        )
+        self.pk_status_lbl.pack(anchor="w", pady=(2, 0))
 
-        def _render_procs(procs):
-            for w in scroll.winfo_children():
-                w.destroy()
-            if not procs:
-                ctk.CTkLabel(scroll, text="No background processes found.", text_color="gray").grid(row=0, column=0, pady=20)
-                rescan.configure(state="normal")
-                return
-            for i, p in enumerate(procs):
-                cb = ctk.CTkCheckBox(
-                    scroll,
-                    text=f"{p['name']} (PID: {p['pid']})  —  {p['memory_mb']:,.0f} MB",
-                    font=get_font(13, "normal"),
-                    fg_color="#f43f5e" if is_cyber else "#1f6aa5",
-                    hover_color="#ff4d6d" if is_cyber else "#2980b9",
-                    checkmark_color="#ffffff"
-                )
-                cb.grid(row=i, column=0, padx=10, pady=6, sticky="w")
-                dialog_cbs.append((cb, p['pid'], p['name']))
-            rescan.configure(state="normal")
-
-        rescan.configure(command=_load_procs)
-
-        # Terminate button
-        def _do_terminate():
-            selected = [(cb, pid, name) for cb, pid, name in dialog_cbs if cb.get()]
-            if not selected:
-                status_lbl.configure(text="No processes selected.", text_color="#ff4d4f")
-                return
-
-            term_btn.configure(state="disabled", text="⚡ TERMINATING..." if is_cyber else "Terminating...")
-            pids = [pid for _, pid, _ in selected]
-            ram_before = get_current_available_ram_mb()
-
-            def _kill():
-                results = terminate_processes(pids)
-                time.sleep(1.0)
-                dialog.after(0, _on_done, results, ram_before)
-
-            threading.Thread(target=_kill, daemon=True).start()
-
-        def _on_done(results, ram_before):
-            ram_after = get_current_available_ram_mb()
-            recovered = ram_after - ram_before
-            success = results["success"]
-            if recovered > 0:
-                status_lbl.configure(text=f"Purged {success} — recovered {recovered:,.0f} MB", text_color="#00ff9f" if is_cyber else "#00ff00")
-            else:
-                status_lbl.configure(text=f"Terminated {success} process(es).", text_color="gray")
-            term_btn.configure(
-                state="normal",
-                text="🎯 PURGE SELECTED PROCESSES" if is_cyber else "Terminate Selected"
-            )
-            self._update_ram_label()
-            _load_procs()
-
-        term_btn = ctk.CTkButton(
-            dialog,
+        self.pk_term_btn = ctk.CTkButton(
+            self.pk_bottom_frame,
             text="🎯 PURGE SELECTED PROCESSES" if is_cyber else "Terminate Selected",
-            font=get_font(14, "bold"),
+            font=get_font(13, "bold"),
             fg_color="#e11d48" if is_cyber else "#cc3333",
             hover_color="#f43f5e" if is_cyber else "#ff4444",
             text_color="#ffffff",
-            height=42,
-            corner_radius=21 if is_cyber else 8,
-            command=_do_terminate
+            height=38,
+            corner_radius=19 if is_cyber else 8,
+            command=self._pk_do_terminate
         )
-        term_btn.pack(fill="x", padx=20, pady=(0, 15))
+        self.pk_term_btn.grid(row=0, column=1, padx=14, pady=10, sticky="e")
 
-        # Kick off the initial scan
-        _load_procs()
+    def _switch_to_subview(self, target_frame):
+        """Hides the main dashboard and any active subview, displaying the target panel."""
+        self.header_frame.grid_remove()
+        self.basic_frame.grid_remove()
+        for frame in (
+            getattr(self, "process_killer_frame", None),
+            getattr(self, "diagnostics_frame", None),
+            getattr(self, "network_frame", None),
+            getattr(self, "sysmain_frame", None),
+        ):
+            if frame and frame != target_frame:
+                frame.grid_remove()
+        target_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
+
+    def show_process_killer(self):
+        """Transition into the in-window Process Terminator panel."""
+        self._switch_to_subview(self.process_killer_frame)
+        self._pk_load_procs()
+
+    def show_dashboard(self):
+        """Transition back to the primary Game Booster dashboard."""
+        for frame in (
+            getattr(self, "process_killer_frame", None),
+            getattr(self, "diagnostics_frame", None),
+            getattr(self, "network_frame", None),
+            getattr(self, "sysmain_frame", None),
+        ):
+            if frame:
+                frame.grid_remove()
+        self.header_frame.grid(row=0, column=0, padx=20, pady=(15, 6), sticky="ew")
+        self.basic_frame.grid(row=1, column=0, sticky="nsew")
+        self._update_ram_label()
+
+    def _open_process_killer(self):
+        """Opens process killer in the same window (backward compatible entry point)."""
+        self.show_process_killer()
+
+    def _pk_toggle_select_all(self):
+        if not self._pk_cbs:
+            return
+        all_checked = all(cb.get() for cb, _, _, _ in self._pk_cbs)
+        for cb, _, _, _ in self._pk_cbs:
+            if all_checked:
+                cb.deselect()
+            else:
+                cb.select()
+        self.pk_select_all_btn.configure(text="Select All" if all_checked else "Deselect All")
+        self._pk_update_selection_summary()
+
+    def _pk_update_selection_summary(self):
+        selected = [(cb, pid, name, mem) for cb, pid, name, mem in self._pk_cbs if cb.get()]
+        count = len(selected)
+        tot_mb = sum(mem for _, _, _, mem in selected)
+        is_cyber = is_cyber_mode()
+
+        if count == 0:
+            self.pk_summary_lbl.configure(text="0 processes selected · 0 MB reclaimable")
+            self.pk_term_btn.configure(
+                state="disabled",
+                fg_color="#334155" if is_cyber else "#333333",
+                text="SELECT PROCESSES" if is_cyber else "Select Processes"
+            )
+        else:
+            self.pk_summary_lbl.configure(text=f"{count} process(es) selected · ~{tot_mb:,.0f} MB reclaimable")
+            self.pk_term_btn.configure(
+                state="normal",
+                fg_color="#e11d48" if is_cyber else "#cc3333",
+                text=f"🎯 PURGE {count} PROCESS(ES)" if is_cyber else f"Terminate {count} Process(es)"
+            )
+
+    def _pk_load_procs(self, sync: bool = False):
+        self.pk_rescan_btn.configure(state="disabled")
+        self.pk_select_all_btn.configure(state="disabled")
+        for w in self.pk_scroll.winfo_children():
+            w.destroy()
+        self._pk_cbs.clear()
+        is_cyber = is_cyber_mode()
+
+        if sync:
+            procs = get_top_memory_consumers(30)
+            self._pk_render_procs(procs)
+            return
+
+        loading_lbl = ctk.CTkLabel(
+            self.pk_scroll,
+            text="> SCANNING ACTIVE PROCESSES...",
+            text_color="#00f0ff" if is_cyber else "gray",
+            font=get_font(13, "bold")
+        )
+        loading_lbl.grid(row=0, column=0, pady=30)
+
+        def _worker():
+            procs = get_top_memory_consumers(30)
+            try:
+                self.after(0, self._pk_render_procs, procs)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _pk_render_procs(self, procs):
+        for w in self.pk_scroll.winfo_children():
+            w.destroy()
+        self._pk_cbs.clear()
+
+        if not procs:
+            ctk.CTkLabel(
+                self.pk_scroll,
+                text="No background processes found.",
+                text_color="gray",
+                font=get_font(12, "normal")
+            ).grid(row=0, column=0, pady=30)
+            self.pk_rescan_btn.configure(state="normal")
+            self.pk_select_all_btn.configure(state="normal", text="Select All")
+            self._pk_update_selection_summary()
+            return
+
+        theme = get_theme()
+        is_cyber = is_cyber_mode()
+
+        for i, p in enumerate(procs):
+            row_frame = ctk.CTkFrame(
+                self.pk_scroll,
+                fg_color=theme.get("bg_card_inner", "#0f172a") if is_cyber else "#1f1f1f",
+                corner_radius=8,
+                border_width=1 if is_cyber else 0,
+                border_color="#1a2b5e" if is_cyber else "#262626"
+            )
+            row_frame.grid(row=i, column=0, padx=10, pady=4, sticky="ew")
+            row_frame.grid_columnconfigure(0, weight=1)
+            row_frame.grid_columnconfigure(1, weight=0)
+
+            cb = ctk.CTkCheckBox(
+                row_frame,
+                text=f"{p['name']}  [PID: {p['pid']}]",
+                font=get_font(13, "normal"),
+                fg_color="#f43f5e" if is_cyber else "#1f6aa5",
+                hover_color="#ff4d6d" if is_cyber else "#2980b9",
+                checkmark_color="#ffffff",
+                command=self._pk_update_selection_summary
+            )
+            cb.grid(row=0, column=0, padx=12, pady=8, sticky="w")
+
+            mem_badge = ctk.CTkLabel(
+                row_frame,
+                text=f"{p['memory_mb']:,.0f} MB",
+                font=get_font(12, "bold", is_stat=True),
+                fg_color="#1e293b" if is_cyber else "#262626",
+                text_color="#f43f5e" if is_cyber else "#ffffff",
+                corner_radius=6,
+                padx=8,
+                pady=2
+            )
+            mem_badge.grid(row=0, column=1, padx=12, pady=8, sticky="e")
+
+            self._pk_cbs.append((cb, p['pid'], p['name'], p['memory_mb']))
+
+        self.pk_rescan_btn.configure(state="normal")
+        self.pk_select_all_btn.configure(state="normal", text="Select All")
+        self._pk_update_selection_summary()
+
+    def _pk_do_terminate(self):
+        selected = [(cb, pid, name, mem) for cb, pid, name, mem in self._pk_cbs if cb.get()]
+        if not selected:
+            self.pk_status_lbl.configure(text="No processes selected.", text_color="#ff4d4f")
+            return
+
+        is_cyber = is_cyber_mode()
+        self.pk_term_btn.configure(state="disabled", text="⚡ TERMINATING..." if is_cyber else "Terminating...")
+        pids = [pid for _, pid, _, _ in selected]
+        ram_before = get_current_available_ram_mb()
+
+        def _kill():
+            results = terminate_processes(pids)
+            time.sleep(1.0)
+            try:
+                if self.winfo_exists():
+                    try:
+                        self.after(0, self._pk_on_terminate_done, results, ram_before)
+                    except RuntimeError:
+                        self._pk_on_terminate_done(results, ram_before)
+            except Exception:
+                pass
+
+        threading.Thread(target=_kill, daemon=True).start()
+
+    def _pk_on_terminate_done(self, results, ram_before):
+        ram_after = get_current_available_ram_mb()
+        recovered = ram_after - ram_before
+        success = results["success"]
+        is_cyber = is_cyber_mode()
+
+        if recovered > 0:
+            self.pk_status_lbl.configure(
+                text=f"Purged {success} process(es) — recovered {recovered:,.0f} MB RAM",
+                text_color="#00ff9f" if is_cyber else "#00ff00"
+            )
+        else:
+            self.pk_status_lbl.configure(
+                text=f"Terminated {success} process(es).",
+                text_color="gray"
+            )
+        self.pk_term_btn.configure(
+            state="normal",
+            text="🎯 PURGE SELECTED PROCESSES" if is_cyber else "Terminate Selected"
+        )
+        self._update_ram_label()
+        self._pk_load_procs()
 
     # ── 1-Click Boost Logic (Smart RAM Optimization) ─────────────
 
@@ -1166,8 +1749,12 @@ class OptimizeView(ctk.CTkFrame):
             trim_result = trim_all_working_sets(exclude_pids=exclude_pids)
             # Small delay for OS to settle
             time.sleep(0.5)
-            self.after(0, self._on_smart_boost_complete,
-                       standby_result, trim_result, ram_before)
+            try:
+                if self.winfo_exists():
+                    self.after(0, self._on_smart_boost_complete,
+                               standby_result, trim_result, ram_before)
+            except Exception:
+                pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1208,281 +1795,562 @@ class OptimizeView(ctk.CTkFrame):
         except Exception:
             pass
 
-    # ── SysMain Control Dialog ─────────────────────────────────
+    # ── Network Stabilization Handlers ─────────────────────────
 
-    def _open_sysmain_dialog(self):
-        """Opens a dialog to check SysMain status and toggle it."""
+    def _run_quick_network_stabilize(self):
+        """1-click network stabilization: DNS flush + Nagle + throttling + TCP."""
         theme = get_theme()
         is_cyber = is_cyber_mode()
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("💾 SYSMAIN STORAGE TWEAKER" if is_cyber else "SysMain Control")
-        dialog.geometry("480x360")
-        dialog.attributes("-topmost", True)
-        dialog.transient(self.winfo_toplevel())
-        dialog.grab_set()
-        dialog.configure(fg_color=theme["bg_main"])
+        self.net_quick_btn.configure(state="disabled", text="Stabilizing...")
+        self.net_status_label.configure(
+            text="⚡ Running network stabilization...",
+            text_color=theme["accent_cyan"] if is_cyber else "#ffcc00"
+        )
 
-        # Center dialog
-        dialog.update_idletasks()
+        def _worker():
+            result = stabilize_network()
+            try:
+                if self.winfo_exists():
+                    self.after(0, _done, result)
+            except Exception:
+                pass
+
+        def _done(result):
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+
+            if result.get("success"):
+                self.net_status_label.configure(
+                    text="● DNS Flushed · TCP Optimized · Throttling Disabled · Nagle Off",
+                    text_color=theme.get("accent_green", "#00ff9f") if is_cyber else "#00cc66"
+                )
+                self.basic_status_label.configure(
+                    text="⚡ Network stabilized — DNS flushed, TCP optimized, throttling disabled.",
+                    text_color=theme.get("accent_green", "#00ff9f") if is_cyber else "#00ff00"
+                )
+            else:
+                self.net_status_label.configure(
+                    text="⚠️ Some optimizations need admin privileges",
+                    text_color="#fbbf24"
+                )
+            self.net_quick_btn.configure(
+                state="normal",
+                text="⚡ STABILIZE" if is_cyber else "Stabilize"
+            )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ── In-Window Network Stabilizer View ───────────────────────
+
+    def _init_network_frame(self, theme: dict, is_cyber: bool):
+        """Construct the in-window Network Stabilization Center panel."""
+        self.network_frame = ctk.CTkFrame(self, fg_color="transparent")
+
+        # Top Bar
+        self.net_top_bar = ctk.CTkFrame(self.network_frame, fg_color="transparent")
+        self.net_top_bar.pack(fill="x", padx=15, pady=(12, 6))
+        self.net_top_bar.grid_columnconfigure(1, weight=1)
+
+        self.net_back_btn = ctk.CTkButton(
+            self.net_top_bar,
+            text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+            font=get_font(12, "bold"),
+            fg_color="#1e293b" if is_cyber else "#333333",
+            hover_color="#334155" if is_cyber else "#444444",
+            text_color="#00f0ff" if is_cyber else "#ffffff",
+            width=190,
+            height=34,
+            corner_radius=17 if is_cyber else 8,
+            command=self.show_dashboard
+        )
+        self.net_back_btn.grid(row=0, column=0, rowspan=2, padx=(0, 14), sticky="w")
+
+        self.net_top_title = ctk.CTkLabel(
+            self.net_top_bar,
+            text="🌐 NETWORK STABILIZATION CENTER" if is_cyber else "🌐 Network Stabilizer",
+            font=get_font(18, "bold"),
+            text_color="#00f0ff" if is_cyber else theme["text_title"],
+            anchor="w"
+        )
+        self.net_top_title.grid(row=0, column=1, sticky="w")
+
+        self.net_top_subtitle = ctk.CTkLabel(
+            self.net_top_bar,
+            text="// Low-latency TCP/IP tuning, adapter power optimization, and DNS calibration" if is_cyber else "Optimize your network stack for minimum latency gaming.",
+            font=get_font(11, "normal"),
+            text_color=theme["text_secondary"],
+            anchor="w"
+        )
+        self.net_top_subtitle.grid(row=1, column=1, sticky="w", pady=(2, 0))
+
+        self.net_probe_btn = ctk.CTkButton(
+            self.net_top_bar,
+            text="⚡ RE-PROBE" if is_cyber else "Re-probe",
+            font=get_font(12, "bold"),
+            fg_color="#1e293b" if is_cyber else "#333333",
+            hover_color="#334155" if is_cyber else "#444444",
+            text_color="#00f0ff" if is_cyber else theme["nav_btn_text"],
+            width=100,
+            height=32,
+            corner_radius=16 if is_cyber else 6,
+            command=self._net_probe_status
+        )
+        self.net_probe_btn.grid(row=0, column=2, rowspan=2, sticky="e")
+
+        # Live status banner
+        self.net_status_card = ctk.CTkFrame(
+            self.network_frame,
+            fg_color=theme["bg_card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=theme.get("border_glow", "#1e1e1e") if is_cyber else "#1e1e1e"
+        )
+        self.net_status_card.pack(fill="x", padx=15, pady=(4, 6))
+        self.net_status_card.grid_columnconfigure((0, 1, 2), weight=1)
+
+        self.net_adapter_lbl = ctk.CTkLabel(
+            self.net_status_card, text="Adapter: Checking...",
+            font=get_font(11, "bold"), text_color=theme["text_secondary"]
+        )
+        self.net_adapter_lbl.grid(row=0, column=0, padx=14, pady=10, sticky="w")
+
+        self.net_latency_lbl = ctk.CTkLabel(
+            self.net_status_card, text="Latency: --",
+            font=get_font(11, "bold"), text_color=theme["text_secondary"]
+        )
+        self.net_latency_lbl.grid(row=0, column=1, padx=14, pady=10)
+
+        self.net_dns_lbl = ctk.CTkLabel(
+            self.net_status_card, text="DNS: --",
+            font=get_font(11, "bold"), text_color=theme["text_secondary"]
+        )
+        self.net_dns_lbl.grid(row=0, column=2, padx=14, pady=10, sticky="e")
+
+        # Result status feedback
+        self.net_result_lbl = ctk.CTkLabel(
+            self.network_frame, text="", font=get_font(12, "bold"),
+            text_color=theme.get("accent_green", "#00ff00")
+        )
+        self.net_result_lbl.pack(padx=15, pady=(2, 4), anchor="w")
+
+        # Scrollable action buttons
+        self.net_scroll = ctk.CTkScrollableFrame(
+            self.network_frame,
+            fg_color=theme["bg_card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=theme.get("border_card", "#1e1e1e")
+        )
+        self.net_scroll.pack(fill="both", expand=True, padx=15, pady=(0, 12))
+        self.net_scroll.grid_columnconfigure(0, weight=1)
+
+        self._build_network_actions(theme, is_cyber)
+
+    def _build_network_actions(self, theme: dict, is_cyber: bool):
+        """Populate the network actions list."""
+        def _make_row(parent, row, icon, title, desc, btn_text, command):
+            frame = ctk.CTkFrame(parent, fg_color="transparent")
+            frame.grid(row=row, column=0, padx=12, pady=6, sticky="ew")
+            frame.grid_columnconfigure(0, weight=1)
+            frame.grid_columnconfigure(1, weight=0)
+
+            info = ctk.CTkFrame(frame, fg_color="transparent")
+            info.grid(row=0, column=0, sticky="ew")
+
+            ctk.CTkLabel(
+                info, text=f"{icon}  {title}",
+                font=get_font(13, "bold"),
+                text_color=theme["text_primary"]
+            ).pack(anchor="w")
+
+            ctk.CTkLabel(
+                info, text=desc,
+                font=get_font(11, "normal"),
+                text_color=theme["text_secondary"],
+                wraplength=520
+            ).pack(anchor="w")
+
+            btn = ctk.CTkButton(
+                frame, text=btn_text,
+                font=get_font(11, "bold"),
+                fg_color=theme.get("accent_green", "#00ff9f") if is_cyber else "#1a6b3a",
+                hover_color="#34d399" if is_cyber else "#22804a",
+                text_color="#020617" if is_cyber else "#ffffff",
+                width=100, height=32,
+                corner_radius=16 if is_cyber else 6,
+                command=command
+            )
+            btn.grid(row=0, column=1, padx=(12, 0), sticky="e")
+            return btn
+
+        self.net_btn1 = _make_row(
+            self.net_scroll, 0, "🧹", "Flush DNS Cache",
+            "Clear stale DNS entries for fresh game server lookups.",
+            "Flush",
+            lambda: self._net_run_action(self.net_btn1, flush_dns_cache, "DNS cache flushed", "DNS flush failed")
+        )
+
+        self.net_btn2 = _make_row(
+            self.net_scroll, 1, "🚀", "Optimize DNS Servers",
+            "Set Cloudflare (1.1.1.1) + Google (8.8.8.8) for fastest lookups.",
+            "Optimize",
+            lambda: self._net_run_action(self.net_btn2, optimize_dns_servers, "DNS servers optimized", "DNS change failed")
+        )
+
+        self.net_btn3 = _make_row(
+            self.net_scroll, 2, "⚡", "Disable Network Throttling",
+            "Remove Windows throughput limiter that causes lag spikes.",
+            "Disable",
+            lambda: self._net_run_action(self.net_btn3, disable_network_throttling, "Network throttling disabled", "Throttling fix failed")
+        )
+
+        self.net_btn4 = _make_row(
+            self.net_scroll, 3, "📶", "Disable Adapter Power Saving",
+            "Prevent NIC sleep mode that causes periodic latency spikes.",
+            "Disable",
+            lambda: self._net_run_action(self.net_btn4, disable_network_power_saving, "Adapter power saving disabled", "Power config failed")
+        )
+
+        self.net_btn5 = _make_row(
+            self.net_scroll, 4, "🔧", "Optimize TCP/IP Stack",
+            "Tune auto-tuning, DCA, and congestion provider for gaming.",
+            "Tune",
+            lambda: self._net_run_action(self.net_btn5, optimize_tcp_settings, "TCP stack optimized", "TCP tuning failed")
+        )
+
+        self.net_btn6 = _make_row(
+            self.net_scroll, 5, "⚠️", "Reset Network Stack (Reboot)",
+            "Nuclear reset: Winsock + TCP/IP. Fixes deep corruption. Needs reboot.",
+            "Reset",
+            lambda: self._net_run_action(self.net_btn6, reset_network_stack, "Network stack reset (reboot required)", "Stack reset failed")
+        )
+        self.net_btn6.configure(
+            fg_color="#e11d48" if is_cyber else "#8b1515",
+            hover_color="#f43f5e" if is_cyber else "#aa1818",
+            text_color="#ffffff"
+        )
+
+    def show_network(self):
+        """Transition to the dedicated Network Stabilizer view via window shift."""
         try:
-            top_w = self.winfo_toplevel()
-            x = max(0, top_w.winfo_x() + (top_w.winfo_width() // 2) - (480 // 2))
-            y = max(0, top_w.winfo_y() + (top_w.winfo_height() // 2) - (360 // 2))
-            dialog.geometry(f"+{x}+{y}")
+            top = self.winfo_toplevel()
+            if hasattr(top, "show_network"):
+                top.show_network()
+                return
         except Exception:
             pass
+        self._switch_to_subview(self.network_frame)
+        self._net_probe_status()
 
-        # Title
-        ctk.CTkLabel(
-            dialog,
-            text="💾 SYSMAIN STORAGE TWEAKER" if is_cyber else "SysMain (Superfetch)",
+    def _open_network_dialog(self):
+        """Open advanced network stabilization via window shift."""
+        self.show_network()
+
+    def _net_run_action(self, btn, action_fn, success_msg, fail_msg):
+        """Run a network tuning action asynchronously with feedback."""
+        theme = get_theme()
+        orig_text = btn.cget("text")
+        btn.configure(state="disabled", text="...")
+        self.net_result_lbl.configure(text="")
+
+        def _worker():
+            res = action_fn()
+            try:
+                self.after(0, _done, res)
+            except Exception:
+                try:
+                    _done(res)
+                except Exception:
+                    pass
+
+        def _done(res):
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            btn.configure(state="normal", text=orig_text)
+            if res.get("success"):
+                self.net_result_lbl.configure(text=f"✅  {success_msg}", text_color=theme.get("accent_green", "#00ff00"))
+            else:
+                err = res.get("error", "Unknown error")
+                self.net_result_lbl.configure(text=f"❌  {fail_msg}: {err}", text_color="#f43f5e")
+            self._net_probe_status()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _net_probe_status(self, sync: bool = False):
+        """Probe live network adapter, latency, and DNS status."""
+        def _worker():
+            info = get_network_status()
+            try:
+                self.after(0, self._net_render_status, info)
+            except Exception:
+                if sync:
+                    self._net_render_status(info)
+
+        if sync:
+            _worker()
+        else:
+            threading.Thread(target=_worker, daemon=True).start()
+
+    def _net_render_status(self, info: dict):
+        """Update network status banner on the main thread."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        theme = get_theme()
+
+        if info.get("connected"):
+            self.net_adapter_lbl.configure(
+                text=f"🟢  {info.get('adapter', '?')} ({info.get('link_speed', '?')})",
+                text_color=theme.get("accent_green", "#00ff00")
+            )
+        else:
+            self.net_adapter_lbl.configure(text="🔴  Disconnected", text_color="#f43f5e")
+
+        lat = info.get("latency_ms", -1)
+        if lat >= 0:
+            lat_color = theme.get("accent_green", "#00ff00") if lat < 50 else ("#fbbf24" if lat < 100 else "#f43f5e")
+            self.net_latency_lbl.configure(text=f"Ping: {lat}ms", text_color=lat_color)
+        else:
+            self.net_latency_lbl.configure(text="Ping: --", text_color=theme["text_secondary"])
+
+        dns_list = info.get("dns", [])
+        if dns_list:
+            self.net_dns_lbl.configure(text=f"DNS: {', '.join(dns_list[:2])}", text_color=theme["text_primary"])
+        else:
+            self.net_dns_lbl.configure(text="DNS: Auto", text_color=theme["text_secondary"])
+
+    # ── In-Window SysMain Control View ─────────────────────────
+
+    def _init_sysmain_frame(self, theme: dict, is_cyber: bool):
+        """Construct the in-window SysMain Storage Tweaker panel."""
+        self.sysmain_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._sm_state = {"running": None}
+
+        # Top Bar
+        self.sm_top_bar = ctk.CTkFrame(self.sysmain_frame, fg_color="transparent")
+        self.sm_top_bar.pack(fill="x", padx=15, pady=(12, 6))
+        self.sm_top_bar.grid_columnconfigure(1, weight=1)
+
+        self.sm_back_btn = ctk.CTkButton(
+            self.sm_top_bar,
+            text="◄ BACK TO GAME BOOSTER" if is_cyber else "◄ Back to Game Booster",
+            font=get_font(12, "bold"),
+            fg_color="#1e293b" if is_cyber else "#333333",
+            hover_color="#334155" if is_cyber else "#444444",
+            text_color="#00f0ff" if is_cyber else "#ffffff",
+            width=190,
+            height=34,
+            corner_radius=17 if is_cyber else 8,
+            command=self.show_dashboard
+        )
+        self.sm_back_btn.grid(row=0, column=0, rowspan=2, padx=(0, 14), sticky="w")
+
+        self.sm_top_title = ctk.CTkLabel(
+            self.sm_top_bar,
+            text="💾 SYSMAIN STORAGE TWEAKER" if is_cyber else "💾 SysMain (Superfetch)",
             font=get_font(18, "bold"),
-            text_color=theme["accent_amber"] if is_cyber else theme["text_title"]
-        ).pack(padx=20, pady=(15, 5), anchor="w")
+            text_color=theme["accent_amber"] if is_cyber else theme["text_title"],
+            anchor="w"
+        )
+        self.sm_top_title.grid(row=0, column=1, sticky="w")
 
-        # Info label
-        info_lbl = ctk.CTkLabel(
-            dialog,
-            text="SysMain pre-caches app data into RAM.\n"
-                 "On SSDs this wastes memory — disabling it\n"
-                 "frees RAM without slowing app launches.",
+        self.sm_top_subtitle = ctk.CTkLabel(
+            self.sm_top_bar,
+            text="// Disable background superfetch caching & RAM prefetching on SSDs" if is_cyber else "Configure SysMain service to prevent memory bloat on SSD systems.",
+            font=get_font(11, "normal"),
+            text_color=theme["text_secondary"],
+            anchor="w"
+        )
+        self.sm_top_subtitle.grid(row=1, column=1, sticky="w", pady=(2, 0))
+
+        # Info card
+        self.sm_info_card = ctk.CTkFrame(
+            self.sysmain_frame,
+            fg_color=theme["bg_card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=theme.get("border_card", "#1e1e1e")
+        )
+        self.sm_info_card.pack(fill="x", padx=15, pady=(4, 6))
+
+        self.sm_info_lbl = ctk.CTkLabel(
+            self.sm_info_card,
+            text="SysMain (Superfetch) pre-caches application data into RAM in the background.\n"
+                 "On SSDs and NVMe drives, this wastes valuable memory bandwidth and can cause in-game micro-stutter.\n"
+                 "Disabling SysMain eliminates background indexing spikes and frees RAM without slowing app launches.",
             font=get_font(12, "normal"),
             text_color=theme["text_secondary"],
             justify="left"
         )
-        info_lbl.pack(padx=20, pady=(0, 10), anchor="w")
+        self.sm_info_lbl.pack(padx=16, pady=12, anchor="w")
 
-        # Status card
-        status_card = ctk.CTkFrame(
-            dialog,
+        # Live Status Card
+        self.sm_status_card = ctk.CTkFrame(
+            self.sysmain_frame,
             fg_color=theme["bg_card"],
             border_width=1,
             border_color="#fbbf24" if is_cyber else "#1e1e1e",
             corner_radius=12
         )
-        status_card.pack(fill="x", padx=20, pady=5)
+        self.sm_status_card.pack(fill="x", padx=15, pady=6)
 
-        status_lbl = ctk.CTkLabel(
-            status_card, text="Checking...",
+        self.sm_status_lbl = ctk.CTkLabel(
+            self.sm_status_card, text="Checking...",
             font=get_font(13, "bold"), text_color=theme["text_primary"]
         )
-        status_lbl.pack(padx=15, pady=8, anchor="w")
+        self.sm_status_lbl.pack(padx=16, pady=(12, 4), anchor="w")
 
-        ssd_lbl = ctk.CTkLabel(
-            status_card, text="Detecting drive type...",
+        self.sm_ssd_lbl = ctk.CTkLabel(
+            self.sm_status_card, text="Detecting drive type...",
             font=get_font(12, "normal"), text_color=theme["text_secondary"]
         )
-        ssd_lbl.pack(padx=15, pady=(0, 8), anchor="w")
+        self.sm_ssd_lbl.pack(padx=16, pady=(0, 12), anchor="w")
 
-        # Result label
-        result_lbl = ctk.CTkLabel(
-            dialog, text="", font=get_font(13, "bold"), text_color=theme["accent_green"]
+        # Result feedback label
+        self.sm_result_lbl = ctk.CTkLabel(
+            self.sysmain_frame, text="", font=get_font(13, "bold"), text_color=theme["accent_green"]
         )
-        result_lbl.pack(padx=20, pady=(5, 0), anchor="w")
+        self.sm_result_lbl.pack(padx=15, pady=(4, 0), anchor="w")
 
-        # Toggle button
-        toggle_btn = ctk.CTkButton(
-            dialog,
+        # Toggle Button
+        self.sm_toggle_btn = ctk.CTkButton(
+            self.sysmain_frame,
             text="Loading...",
             font=get_font(14, "bold"),
             fg_color="#334155" if is_cyber else "#555555",
             hover_color="#475569" if is_cyber else "#666666",
             text_color="#ffffff",
-            height=42,
-            corner_radius=21 if is_cyber else 8,
+            height=44,
+            corner_radius=22 if is_cyber else 8,
             state="disabled"
         )
-        toggle_btn.pack(fill="x", padx=20, pady=(10, 15))
+        self.sm_toggle_btn.pack(fill="x", padx=15, pady=(10, 15))
 
-        # State holder for the current SysMain status
-        state = {"running": None}
+    def show_sysmain(self):
+        """Transition into the in-window SysMain Control panel."""
+        self._switch_to_subview(self.sysmain_frame)
+        self._sm_check_status()
 
-        def _check_status():
-            def _worker():
-                sm_status = get_sysmain_status()
-                has_ssd = check_has_ssd()
-                dialog.after(0, _render_status, sm_status, has_ssd)
-            threading.Thread(target=_worker, daemon=True).start()
+    def _open_sysmain_dialog(self):
+        """Opens SysMain tweaker in the same window (backward compatible entry point)."""
+        self.show_sysmain()
 
-        def _render_status(sm_status, has_ssd):
-            state["running"] = sm_status["running"]
-
-            if sm_status["error"]:
-                status_lbl.configure(text=f"Error: {sm_status['error']}", text_color="#ff4d4f")
-                return
-
-            running_text = "RUNNING" if sm_status["running"] else "STOPPED"
-            start_text = sm_status["start_type"].upper()
-            status_icon = "🟢" if sm_status["running"] else "🔴"
-            status_lbl.configure(
-                text=f"{status_icon}  SysMain is {running_text} (startup: {start_text})",
-                text_color="#00ff9f" if sm_status["running"] else "#ff4d4f"
-            )
-
-            ssd_icon = "💾 SSD detected" if has_ssd else "💽 HDD detected"
-            rec = " — disabling SysMain recommended!" if has_ssd and sm_status["running"] else ""
-            ssd_lbl.configure(
-                text=f"{ssd_icon}{rec}",
-                text_color=theme["accent_amber"] if (has_ssd and sm_status["running"]) else theme["text_secondary"]
-            )
-
-            if sm_status["running"]:
-                toggle_btn.configure(
-                    text="⚡ DISABLE SYSMAIN SERVICE" if is_cyber else "Disable SysMain",
-                    fg_color="#e11d48" if is_cyber else "#cc3333",
-                    hover_color="#f43f5e" if is_cyber else "#ff4444",
-                    state="normal", command=lambda: _toggle(False)
-                )
-            else:
-                toggle_btn.configure(
-                    text="⚡ ENABLE SYSMAIN SERVICE" if is_cyber else "Enable SysMain",
-                    fg_color=theme["action_btn_fg"], hover_color=theme["action_btn_hover"],
-                    text_color=theme["action_btn_text"],
-                    state="normal", command=lambda: _toggle(True)
-                )
-
-        def _toggle(enable):
-            toggle_btn.configure(state="disabled", text="Applying...")
-            result_lbl.configure(text="")
-
-            def _worker():
-                res = set_sysmain_enabled(enable)
-                time.sleep(1.0)
-                dialog.after(0, _on_toggle_done, res, enable)
-
-            threading.Thread(target=_worker, daemon=True).start()
-
-        def _on_toggle_done(res, enabled):
-            if res["success"]:
-                action = "enabled" if enabled else "disabled"
-                result_lbl.configure(
-                    text=f"SysMain {action} successfully!",
-                    text_color="#00ff00"
-                )
-            else:
-                result_lbl.configure(
-                    text=f"Failed: {res['error']}",
-                    text_color="#ff4d4f"
-                )
-            self._update_ram_label()
-            self._init_sysmain_status()
-            _check_status()
-
-        # Kick off initial status check
-        _check_status()
-
-
-    # ── Advanced Mode Logic ────────────────────────────────────
-
-    def _load_advanced_processes(self):
-        self.rescan_btn.configure(state="disabled")
-        self._update_ram_label()
-        
-        for widget in self.list_frame.winfo_children():
-            widget.destroy()
-        self.checkboxes.clear()
-        
-        loading_lbl = ctk.CTkLabel(self.list_frame, text="Scanning...", text_color="gray")
-        loading_lbl.grid(row=0, column=0, pady=20)
-        
+    def _sm_check_status(self, sync: bool = False):
+        """Check SysMain service status and drive type."""
         def _worker():
-            procs = get_top_memory_consumers(15)
+            sm_status = get_sysmain_status()
+            has_ssd = check_has_ssd()
             try:
-                if self.winfo_exists():
-                    self.after(0, self._render_advanced_processes, procs)
+                self.after(0, self._sm_render_status, sm_status, has_ssd)
             except Exception:
-                pass
-            
-        threading.Thread(target=_worker, daemon=True).start()
+                if sync:
+                    self._sm_render_status(sm_status, has_ssd)
 
-    def _render_advanced_processes(self, procs):
-        for widget in self.list_frame.winfo_children():
-            widget.destroy()
-            
-        if not procs:
-            ctk.CTkLabel(self.list_frame, text="No processes found.", text_color="gray").grid(row=0, column=0, pady=20)
-            self.rescan_btn.configure(state="normal")
-            return
-
-        for i, p in enumerate(procs):
-            cb = ctk.CTkCheckBox(
-                self.list_frame, 
-                text=f"{p['name']} (PID: {p['pid']})  -  {p['memory_mb']:,.0f} MB",
-                font=ctk.CTkFont(size=14)
-            )
-            cb.grid(row=i, column=0, padx=10, pady=8, sticky="w")
-            self.checkboxes.append((cb, p['pid'], p['name']))
-            
-        self.rescan_btn.configure(state="normal")
-
-    def _confirm_termination(self):
-        selected = [(cb, pid, name) for cb, pid, name in self.checkboxes if cb.get()]
-        if not selected:
-            self.adv_result_label.configure(text="No processes selected.", text_color="#ff4d4f")
-            return
-            
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Confirm Termination")
-        dialog.geometry("400x200")
-        dialog.attributes("-topmost", True)
-        dialog.transient(self.winfo_toplevel())
-        dialog.grab_set()
-        
-        dialog.update_idletasks()
-        try:
-            top_w = self.winfo_toplevel()
-            x = max(0, top_w.winfo_x() + (top_w.winfo_width() // 2) - (400 // 2))
-            y = max(0, top_w.winfo_y() + (top_w.winfo_height() // 2) - (200 // 2))
-            dialog.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-        
-        dialog.configure(fg_color="#0a0a0a")
-        
-        lbl = ctk.CTkLabel(dialog, text=f"WARNING: Terminating {len(selected)} processes.\nUnsaved data may be lost. Proceed?", text_color="#ffffff")
-        lbl.pack(pady=(30, 20))
-        
-        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=20)
-        btn_frame.grid_columnconfigure((0, 1), weight=1)
-
-        def on_cancel():
-            dialog.destroy()
-
-        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
-        
-        ctk.CTkButton(btn_frame, text="Cancel", fg_color="#333333", hover_color="#444444", command=on_cancel).grid(row=0, column=0, padx=10, sticky="ew")
-        
-        def on_confirm():
-            dialog.destroy()
-            self._execute_termination(selected)
-            
-        ctk.CTkButton(btn_frame, text="Terminate", fg_color="#ff4d4f", hover_color="#cc0000", command=on_confirm).grid(row=0, column=1, padx=10, sticky="ew")
-
-    def _execute_termination(self, selected):
-        self.terminate_btn.configure(state="disabled", text="Terminating...")
-        pids_to_kill = [pid for _, pid, _ in selected]
-        ram_before = self._update_ram_label()
-        
-        def _worker():
-            results = terminate_processes(pids_to_kill)
-            time.sleep(1.0)
-            self.after(0, self._on_advanced_termination_complete, results, ram_before)
-            
-        threading.Thread(target=_worker, daemon=True).start()
-        
-    def _on_advanced_termination_complete(self, results, ram_before):
-        ram_after = self._update_ram_label()
-        recovered = ram_after - ram_before
-        success = results["success"]
-        
-        if recovered > 0:
-            self.adv_result_label.configure(text=f"Recovered {recovered:,.0f} MB.", text_color="#00ff00")
+        if sync:
+            _worker()
         else:
-            self.adv_result_label.configure(text=f"Terminated {success} apps.", text_color="gray")
-            
-        self.terminate_btn.configure(
-            state="normal",
-            text="⚡ TERMINATE SELECTED" if is_cyber_mode() else "Terminate Selected"
+            threading.Thread(target=_worker, daemon=True).start()
+
+    def _sm_render_status(self, sm_status: dict, has_ssd: bool):
+        """Render SysMain status and update toggle button on the main thread."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        theme = get_theme()
+        is_cyber = is_cyber_mode()
+
+        self._sm_state["running"] = sm_status.get("running")
+
+        if sm_status.get("error"):
+            self.sm_status_lbl.configure(text=f"Error: {sm_status['error']}", text_color="#ff4d4f")
+            return
+
+        running = sm_status.get("running", False)
+        running_text = "RUNNING" if running else "STOPPED"
+        start_text = sm_status.get("start_type", "unknown").upper()
+        status_icon = "🟢" if running else "🔴"
+        self.sm_status_lbl.configure(
+            text=f"{status_icon}  SysMain is {running_text} (startup: {start_text})",
+            text_color="#00ff9f" if running else "#ff4d4f"
         )
-        self._load_advanced_processes()
+
+        ssd_icon = "💾 SSD detected" if has_ssd else "💽 HDD detected"
+        rec = " — disabling SysMain recommended!" if has_ssd and running else ""
+        self.sm_ssd_lbl.configure(
+            text=f"{ssd_icon}{rec}",
+            text_color=theme["accent_amber"] if (has_ssd and running) else theme["text_secondary"]
+        )
+
+        if running:
+            self.sm_toggle_btn.configure(
+                text="⚡ DISABLE SYSMAIN SERVICE" if is_cyber else "Disable SysMain",
+                fg_color="#e11d48" if is_cyber else "#cc3333",
+                hover_color="#f43f5e" if is_cyber else "#ff4444",
+                text_color="#ffffff",
+                state="normal",
+                command=lambda: self._sm_toggle(False)
+            )
+        else:
+            self.sm_toggle_btn.configure(
+                text="⚡ ENABLE SYSMAIN SERVICE" if is_cyber else "Enable SysMain",
+                fg_color=theme["action_btn_fg"],
+                hover_color=theme["action_btn_hover"],
+                text_color=theme["action_btn_text"],
+                state="normal",
+                command=lambda: self._sm_toggle(True)
+            )
+
+    def _sm_toggle(self, enable: bool):
+        """Toggle SysMain service state asynchronously."""
+        self.sm_toggle_btn.configure(state="disabled", text="Applying...")
+        self.sm_result_lbl.configure(text="")
+
+        def _worker():
+            res = set_sysmain_enabled(enable)
+            time.sleep(0.5)
+            try:
+                self.after(0, self._sm_on_toggle_done, res, enable)
+            except Exception:
+                try:
+                    self._sm_on_toggle_done(res, enable)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _sm_on_toggle_done(self, res: dict, enabled: bool):
+        """Handle SysMain toggle completion and update status."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        if res.get("success"):
+            action = "enabled" if enabled else "disabled"
+            self.sm_result_lbl.configure(
+                text=f"SysMain {action} successfully!",
+                text_color="#00ff00"
+            )
+        else:
+            self.sm_result_lbl.configure(
+                text=f"Failed: {res.get('error', 'Unknown error')}",
+                text_color="#ff4d4f"
+            )
+        self._update_ram_label()
+        self._init_sysmain_status()
+        self._sm_check_status()
+
+

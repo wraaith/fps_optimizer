@@ -274,88 +274,95 @@ def run_system_scan() -> Dict[str, Any]:
         except Exception:
             pass
 
-    # CPU
     try:
-        cpu_name = _get_cpu_name()
-        cpu_logical = psutil.cpu_count(logical=True)
-        cpu_physical = psutil.cpu_count(logical=False) or cpu_logical
-        cpu_usage = psutil.cpu_percent(interval=1.0)
-    except Exception:
-        cpu_name = "Unknown"
-        cpu_logical = 0
-        cpu_physical = 0
-        cpu_usage = 0.0
+        # CPU
+        try:
+            cpu_name = _get_cpu_name()
+            cpu_logical = psutil.cpu_count(logical=True)
+            cpu_physical = psutil.cpu_count(logical=False) or cpu_logical
+            cpu_usage = psutil.cpu_percent(interval=1.0)
+        except Exception:
+            cpu_name = "Unknown"
+            cpu_logical = 0
+            cpu_physical = 0
+            cpu_usage = 0.0
 
-    # Enrich CPU data from the hardware database
-    try:
-        cpu_db = lookup_cpu(cpu_name)
-        cpu_threads = cpu_db["threads"] or cpu_logical
-        
-        live_power = get_live_cpu_power_wmi()
-        if live_power is not None:
-            cpu_tdp_w = live_power
-        else:
-            cpu_tdp_w = cpu_db["tdp_w"]
-    except Exception:
-        cpu_threads = cpu_logical
-        cpu_tdp_w = None
+        # Enrich CPU data from the hardware database
+        try:
+            cpu_db = lookup_cpu(cpu_name)
+            cpu_threads = cpu_db["threads"] or cpu_logical
+            
+            live_power = get_live_cpu_power_wmi()
+            if live_power is not None:
+                cpu_tdp_w = live_power
+            else:
+                cpu_tdp_w = cpu_db["tdp_w"]
+        except Exception:
+            cpu_threads = cpu_logical
+            cpu_tdp_w = None
 
-    # RAM
-    try:
-        vm = psutil.virtual_memory()
-        ram_total_gb = round(vm.total / (1024 ** 3), 1)
-        ram_used_gb = round((vm.total - vm.available) / (1024 ** 3), 1)
-    except Exception:
-        ram_total_gb = 0.0
-        ram_used_gb = 0.0
+        # RAM
+        try:
+            vm = psutil.virtual_memory()
+            ram_total_gb = round(vm.total / (1024 ** 3), 1)
+            ram_used_gb = round((vm.total - vm.available) / (1024 ** 3), 1)
+        except Exception:
+            ram_total_gb = 0.0
+            ram_used_gb = 0.0
 
-    # GPU
-    try:
-        gpu_info = _get_gpu_info()
-    except Exception:
-        gpu_info = {"name": "Unknown", "vram_gb": None,
-                    "cores": None, "core_type": None,
-                    "series": None, "bandwidth_gbs": None,
-                    "tdp_w": None}
+        # GPU
+        try:
+            gpu_info = _get_gpu_info()
+        except Exception:
+            gpu_info = {"name": "Unknown", "vram_gb": None,
+                        "cores": None, "core_type": None,
+                        "series": None, "bandwidth_gbs": None,
+                        "tdp_w": None}
 
-    # OS
-    try:
-        os_info = _get_os_info()
-    except Exception:
-        os_info = {"name": platform.system(), "release": platform.release(),
-                   "version": platform.version()}
+        # OS
+        try:
+            os_info = _get_os_info()
+        except Exception:
+            os_info = {"name": platform.system(), "release": platform.release(),
+                       "version": platform.version()}
 
-    # Calculate total system TDP
-    total_tdp_w = None
-    if cpu_tdp_w is not None and gpu_info.get("tdp_w") is not None:
-        total_tdp_w = round(cpu_tdp_w + gpu_info["tdp_w"], 1)
+        # Calculate total system TDP
+        total_tdp_w = None
+        if cpu_tdp_w is not None and gpu_info.get("tdp_w") is not None:
+            total_tdp_w = round(cpu_tdp_w + gpu_info["tdp_w"], 1)
 
-    # Calculate bottleneck score (CPU cores / GPU VRAM ratio)
-    bottleneck_score = None
-    if (cpu_physical and cpu_physical > 0 and
-            gpu_info.get("vram_gb") and gpu_info["vram_gb"] > 0):
-        bottleneck_score = round(
-            gpu_info["vram_gb"] / cpu_physical, 2
-        )
+        # Calculate bottleneck score (CPU cores / GPU VRAM ratio)
+        bottleneck_score = None
+        if (cpu_physical and cpu_physical > 0 and
+                gpu_info.get("vram_gb") and gpu_info["vram_gb"] > 0):
+            bottleneck_score = round(
+                gpu_info["vram_gb"] / cpu_physical, 2
+            )
 
-    result = {
-        "cpu": {
-            "name": cpu_name,
-            "logical_cores": cpu_logical,
-            "physical_cores": cpu_physical,
-            "threads": cpu_threads,
-            "tdp_w": cpu_tdp_w,
-            "usage_percent": cpu_usage,
-        },
-        "ram": {
-            "total_gb": ram_total_gb,
-            "used_gb": ram_used_gb,
-        },
-        "gpu": gpu_info,
-        "os": os_info,
-        "system": {
-            "total_tdp_w": total_tdp_w,
-            "bottleneck_score": bottleneck_score,
-        },
-    }
-    return result
+        result = {
+            "cpu": {
+                "name": cpu_name,
+                "logical_cores": cpu_logical,
+                "physical_cores": cpu_physical,
+                "threads": cpu_threads,
+                "tdp_w": cpu_tdp_w,
+                "usage_percent": cpu_usage,
+            },
+            "ram": {
+                "total_gb": ram_total_gb,
+                "used_gb": ram_used_gb,
+            },
+            "gpu": gpu_info,
+            "os": os_info,
+            "system": {
+                "total_tdp_w": total_tdp_w,
+                "bottleneck_score": bottleneck_score,
+            },
+        }
+        return result
+    finally:
+        if _com_initialized and pythoncom is not None:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass

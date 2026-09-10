@@ -263,6 +263,10 @@ def predict_fps(
             "confidence": "none", "matches": 0,
         }
 
+    min_fps = sum(s * r["min_fps"] for s, r in top) / total_weight
+    avg_fps = sum(s * r["avg_fps"] for s, r in top) / total_weight
+    max_fps = sum(s * r["max_fps"] for s, r in top) / total_weight
+
     r_min, r_avg, r_max = _clean_fps(min_fps, avg_fps, max_fps)
 
     return {

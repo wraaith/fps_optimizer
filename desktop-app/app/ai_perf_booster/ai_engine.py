@@ -153,10 +153,10 @@ def decide_actions(row: dict, anomaly_result: dict, thresholds=None):
     Never recommends killing a process; only cache/priority/background tweaks.
     """
     thresholds = thresholds or {
-        "mem_high": 80,
-        "mem_critical": 88,
-        "cpu_high": 85,
-        "swap_high": 50
+        "mem_high": 70,
+        "mem_critical": 82,
+        "cpu_high": 75,
+        "swap_high": 40
     }
     actions = []
 
