@@ -1,9 +1,11 @@
 import customtkinter as ctk
+from ui.theme_manager import get_theme, get_font
 
 
 class OverlaySettingsView(ctk.CTkFrame):
     def __init__(self, parent, initial_settings: dict, on_apply):
-        super().__init__(parent)
+        theme = get_theme()
+        super().__init__(parent, fg_color=theme["bg_main"])
 
         self.on_apply = on_apply
 
@@ -15,19 +17,20 @@ class OverlaySettingsView(ctk.CTkFrame):
         self.title_label = ctk.CTkLabel(
             self,
             text="Overlay Settings",
-            font=ctk.CTkFont(size=24, weight="bold")
+            font=get_font(24, "bold"),
+            text_color=theme["text_title"]
         )
         self.title_label.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
 
         self.desc_label = ctk.CTkLabel(
             self,
             text="Customize overlay appearance and visible metrics.",
-            font=ctk.CTkFont(size=14),
-            text_color="gray"
+            font=get_font(14, "normal"),
+            text_color=theme["text_secondary"]
         )
         self.desc_label.grid(row=1, column=0, padx=20, pady=(0, 15), sticky="w")
 
-        self.content = ctk.CTkScrollableFrame(self)
+        self.content = ctk.CTkScrollableFrame(self, fg_color=theme["bg_card"])
         self.content.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
         self.content.grid_columnconfigure(0, weight=1)
 
@@ -228,6 +231,10 @@ class OverlaySettingsView(ctk.CTkFrame):
         self.apply_button = ctk.CTkButton(
             self.button_frame,
             text="Apply Settings to Overlay",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color="#ffffff",
+            hover_color="#e0e0e0",
+            text_color="#000000",
             command=self.apply_settings
         )
         self.apply_button.grid(row=0, column=0, sticky="ew")
@@ -287,12 +294,8 @@ class OverlaySettingsView(ctk.CTkFrame):
         reverse_position_map = {
             "top-left": "Top Left",
             "top-right": "Top Right",
-            "bottom-left": "bottom-left",
-            "bottom-right": "bottom-right",
-        }
-        layout_map = {
-            "Vertical": "vertical",
-            "Horizontal": "horizontal",
+            "bottom-left": "Bottom Left",
+            "bottom-right": "Bottom Right",
         }
         reverse_theme_map = {
             "minimalist_dark": "Minimalist Dark",
@@ -416,3 +419,17 @@ class OverlaySettingsView(ctk.CTkFrame):
         }
 
         self.on_apply(settings)
+
+    def apply_theme(self, is_cyber: bool):
+        """Re-style the overlay settings view when theme mode changes."""
+        theme = get_theme()
+        self.configure(fg_color=theme["bg_main"])
+        self.content.configure(fg_color=theme["bg_card"])
+        self.title_label.configure(
+            font=get_font(24, "bold"),
+            text_color=theme["text_title"]
+        )
+        self.desc_label.configure(
+            font=get_font(14, "normal"),
+            text_color=theme["text_secondary"]
+        )

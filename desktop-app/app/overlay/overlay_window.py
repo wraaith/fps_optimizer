@@ -43,6 +43,13 @@ except Exception:
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_LAYERED = 0x00080000
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+SWP_FRAMECHANGED = 0x0020
+GA_ROOT = 2
 
 if platform.system() == "Windows":
     user32 = ctypes.windll.user32
@@ -50,6 +57,16 @@ if platform.system() == "Windows":
     user32.GetWindowLongW.restype = ctypes.c_long
     user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
     user32.SetWindowLongW.restype = ctypes.c_long
+    user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    user32.GetAncestor.restype = ctypes.c_void_p
+    user32.GetParent.argtypes = [ctypes.c_void_p]
+    user32.GetParent.restype = ctypes.c_void_p
+    user32.SetWindowPos.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_uint
+    ]
+    user32.SetWindowPos.restype = ctypes.c_bool
 else:
     user32 = None
 
@@ -243,6 +260,7 @@ class OverlayWindow(ctk.CTkToplevel):
         # Update layout
         self.update_idletasks()
         self._update_position()
+        self._apply_window_styles()
 
     # ── Position ─────────────────────────────────────────────────
 
@@ -272,6 +290,29 @@ class OverlayWindow(ctk.CTkToplevel):
 
     # ── Window styles ────────────────────────────────────────────
 
+    def _get_target_hwnds(self) -> list[int]:
+        """Return HWNDs for both Tk's internal child window and the root OS window."""
+        hwnds = []
+        if not self.winfo_exists():
+            return hwnds
+        child = self.winfo_id()
+        if child:
+            hwnds.append(child)
+            if user32 is not None:
+                try:
+                    root = user32.GetAncestor(child, GA_ROOT)
+                    if root and root not in hwnds:
+                        hwnds.append(root)
+                except Exception:
+                    pass
+                try:
+                    parent = user32.GetParent(child)
+                    if parent and parent not in hwnds:
+                        hwnds.append(parent)
+                except Exception:
+                    pass
+        return hwnds
+
     def _apply_window_styles(self) -> None:
         if self._closed or not self.winfo_exists():
             return
@@ -279,16 +320,28 @@ class OverlayWindow(ctk.CTkToplevel):
         if user32 is None:
             return
 
-        hwnd = self.winfo_id()
-        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        style |= WS_EX_TOOLWINDOW
+        is_click_through = self._settings.get("click_through", True)
+        hwnds = self._get_target_hwnds()
 
-        if self._settings.get("click_through", True):
-            style |= WS_EX_TRANSPARENT
-        else:
-            style &= ~WS_EX_TRANSPARENT
+        for hwnd in hwnds:
+            try:
+                style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                style |= WS_EX_TOOLWINDOW
 
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+                if is_click_through:
+                    # Windows requires both WS_EX_LAYERED and WS_EX_TRANSPARENT for mouse click-through
+                    style |= (WS_EX_LAYERED | WS_EX_TRANSPARENT)
+                else:
+                    style &= ~WS_EX_TRANSPARENT
+
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+                user32.SetWindowPos(
+                    hwnd, 0, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+                )
+            except Exception:
+                pass
+
         self.attributes("-topmost", True)
         self.lift()
 

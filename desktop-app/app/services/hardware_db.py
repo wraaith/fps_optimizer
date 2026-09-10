@@ -74,14 +74,31 @@ def lookup_gpu(gpu_name: str) -> Dict[str, Any]:
         best_model_len = 0
         best_entry: Optional[Dict[str, Any]] = None
 
+        # Pass 1: exact short model or full model match
         for entry in gpus:
             model = entry.get("model", "")
             if not model:
                 continue
             model_upper = model.upper()
-            if _contains_model(model_upper, name_upper) and len(model) > best_model_len:
-                best_model_len = len(model)
+            short_model = re.sub(r'^(GEFORCE|RADEON|INTEL ARC|ARC)\s+', '', model_upper).strip()
+            if short_model == name_upper or model_upper == name_upper:
                 best_entry = entry
+                break
+
+        # Pass 2: DB model or short model in detected name (longest match wins)
+        if best_entry is None:
+            for entry in gpus:
+                model = entry.get("model", "")
+                if not model:
+                    continue
+                model_upper = model.upper()
+                short_model = re.sub(r'^(GEFORCE|RADEON|INTEL ARC|ARC)\s+', '', model_upper).strip()
+                if _contains_model(model_upper, name_upper) and len(model) > best_model_len:
+                    best_model_len = len(model)
+                    best_entry = entry
+                elif short_model and _contains_model(short_model, name_upper) and len(short_model) > best_model_len:
+                    best_model_len = len(short_model)
+                    best_entry = entry
 
         if best_entry is not None:
             result["cores"] = (
@@ -256,11 +273,11 @@ def _estimate_cpu_tdp(cpu_name: str) -> Optional[float]:
     model_id = _extract_cpu_model_id(cpu_name).upper()
 
     # 1. High-Performance Laptops (HX, HK) -> ~55W base
-    if re.search(r'\d{4,5}H[XK]\b', model_id):
+    if re.search(r'\d{3,5}H[XK]\b', model_id):
         return 55.0
 
     # 2. Standard Laptops (H, HS) -> ~45W base
-    if re.search(r'\d{4,5}HS?\b', model_id):
+    if re.search(r'\d{3,5}HS?\b', model_id):
         return 45.0
 
     # 3. Thin & Light Mobile (U-series, P-series, G7) -> ~15-28W

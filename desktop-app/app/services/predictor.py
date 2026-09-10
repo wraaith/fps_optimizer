@@ -263,26 +263,41 @@ def predict_fps(
             "confidence": "none", "matches": 0,
         }
 
-    min_fps = sum(s * r["min_fps"] for s, r in top) / total_weight
-    avg_fps = sum(s * r["avg_fps"] for s, r in top) / total_weight
-    max_fps = sum(s * r["max_fps"] for s, r in top) / total_weight
+    r_min, r_avg, r_max = _clean_fps(min_fps, avg_fps, max_fps)
 
     return {
-        "min_fps": round(min_fps),
-        "avg_fps": round(avg_fps),
-        "max_fps": round(max_fps),
+        "min_fps": r_min,
+        "avg_fps": r_avg,
+        "max_fps": r_max,
         "confidence": _confidence_from_score(top[0][0]),
         "matches": len(top),
     }
 
 
+def _clean_fps(min_f: float, avg_f: float, max_f: float) -> Tuple[int, int, int]:
+    """Ensure rounded FPS values satisfy min <= avg <= max."""
+    r_min = round(min_f)
+    r_avg = round(avg_f)
+    r_max = round(max_f)
+    if r_min > r_avg:
+        r_min = r_avg
+    if r_avg > r_max:
+        r_max = r_avg
+    return r_min, r_avg, r_max
+
+
 def _aggregate(rows: List[Dict[str, Any]], confidence: str) -> Dict[str, Any]:
     """Simple average across matched rows."""
     n = len(rows)
+    r_min, r_avg, r_max = _clean_fps(
+        sum(r["min_fps"] for r in rows) / n,
+        sum(r["avg_fps"] for r in rows) / n,
+        sum(r["max_fps"] for r in rows) / n,
+    )
     return {
-        "min_fps": round(sum(r["min_fps"] for r in rows) / n),
-        "avg_fps": round(sum(r["avg_fps"] for r in rows) / n),
-        "max_fps": round(sum(r["max_fps"] for r in rows) / n),
+        "min_fps": r_min,
+        "avg_fps": r_avg,
+        "max_fps": r_max,
         "confidence": confidence,
         "matches": n,
     }
@@ -300,10 +315,15 @@ def _weighted_aggregate(
         weights.append(max(0.1, 1.0 - dist / 3.0))
 
     total = sum(weights)
+    r_min, r_avg, r_max = _clean_fps(
+        sum(w * r["min_fps"] for w, r in zip(weights, rows)) / total,
+        sum(w * r["avg_fps"] for w, r in zip(weights, rows)) / total,
+        sum(w * r["max_fps"] for w, r in zip(weights, rows)) / total,
+    )
     return {
-        "min_fps": round(sum(w * r["min_fps"] for w, r in zip(weights, rows)) / total),
-        "avg_fps": round(sum(w * r["avg_fps"] for w, r in zip(weights, rows)) / total),
-        "max_fps": round(sum(w * r["max_fps"] for w, r in zip(weights, rows)) / total),
+        "min_fps": r_min,
+        "avg_fps": r_avg,
+        "max_fps": r_max,
         "confidence": confidence,
         "matches": len(rows),
     }

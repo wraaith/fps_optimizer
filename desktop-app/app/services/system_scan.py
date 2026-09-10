@@ -103,10 +103,16 @@ def get_live_gpu_power() -> Optional[float]:
     try:
         import pynvml
         pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        # Returns power in milliwatts, divide by 1000 for exact live Watts
-        power_mw = pynvml.nvmlDeviceGetPowerUsage(handle)
-        return round(power_mw / 1000.0, 1)
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            # Returns power in milliwatts, divide by 1000 for exact live Watts
+            power_mw = pynvml.nvmlDeviceGetPowerUsage(handle)
+            return round(power_mw / 1000.0, 1)
+        finally:
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
     except Exception:
         return None # Fallback if non-NVIDIA or driver missing
 
@@ -322,7 +328,7 @@ def run_system_scan() -> Dict[str, Any]:
     # Calculate total system TDP
     total_tdp_w = None
     if cpu_tdp_w is not None and gpu_info.get("tdp_w") is not None:
-        total_tdp_w = cpu_tdp_w + gpu_info["tdp_w"]
+        total_tdp_w = round(cpu_tdp_w + gpu_info["tdp_w"], 1)
 
     # Calculate bottleneck score (CPU cores / GPU VRAM ratio)
     bottleneck_score = None
@@ -352,12 +358,4 @@ def run_system_scan() -> Dict[str, Any]:
             "bottleneck_score": bottleneck_score,
         },
     }
-
-    # Release COM for this thread
-    if _com_initialized:
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
-
     return result

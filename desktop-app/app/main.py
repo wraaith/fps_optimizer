@@ -12,19 +12,14 @@ except Exception:
     except Exception:
         pass
 
+import subprocess
 import tkinter as tk
 
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
+    except Exception:
         return False
-
-if not is_admin():
-    # Re-run the script with administrative privileges
-    print("Requesting administrator privileges...")
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
-    sys.exit()
 
 
 def launch_overlay():
@@ -62,6 +57,13 @@ def launch_main_window():
 
 
 def main():
+    if not is_admin():
+        # Re-run the script with administrative privileges
+        print("Requesting administrator privileges...")
+        cmdline = subprocess.list2cmdline(sys.argv)
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, cmdline, None, 1)
+        sys.exit()
+
     if "--overlay" in sys.argv:
         launch_overlay()
     else:
