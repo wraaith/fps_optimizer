@@ -271,31 +271,31 @@ class NetworkView(ctk.CTkFrame):
         try:
             if not self.winfo_exists():
                 return
+
+            theme = get_theme()
+
+            if info.get("connected"):
+                self.adapter_lbl.configure(
+                    text=f"🟢  {info.get('adapter', '?')} ({info.get('link_speed', '?')})",
+                    text_color=theme.get("accent_green", "#00ff00")
+                )
+            else:
+                self.adapter_lbl.configure(text="🔴  Disconnected", text_color="#f43f5e")
+
+            lat = info.get("latency_ms", -1)
+            if lat >= 0:
+                lat_color = theme.get("accent_green", "#00ff00") if lat < 50 else ("#fbbf24" if lat < 100 else "#f43f5e")
+                self.latency_lbl.configure(text=f"Ping: {lat}ms", text_color=lat_color)
+            else:
+                self.latency_lbl.configure(text="Ping: --", text_color=theme["text_secondary"])
+
+            dns_list = info.get("dns", [])
+            if dns_list:
+                self.dns_lbl.configure(text=f"DNS: {', '.join(dns_list[:2])}", text_color=theme["text_primary"])
+            else:
+                self.dns_lbl.configure(text="DNS: Auto", text_color=theme["text_secondary"])
         except Exception:
-            return
-
-        theme = get_theme()
-
-        if info.get("connected"):
-            self.adapter_lbl.configure(
-                text=f"🟢  {info.get('adapter', '?')} ({info.get('link_speed', '?')})",
-                text_color=theme.get("accent_green", "#00ff00")
-            )
-        else:
-            self.adapter_lbl.configure(text="🔴  Disconnected", text_color="#f43f5e")
-
-        lat = info.get("latency_ms", -1)
-        if lat >= 0:
-            lat_color = theme.get("accent_green", "#00ff00") if lat < 50 else ("#fbbf24" if lat < 100 else "#f43f5e")
-            self.latency_lbl.configure(text=f"Ping: {lat}ms", text_color=lat_color)
-        else:
-            self.latency_lbl.configure(text="Ping: --", text_color=theme["text_secondary"])
-
-        dns_list = info.get("dns", [])
-        if dns_list:
-            self.dns_lbl.configure(text=f"DNS: {', '.join(dns_list[:2])}", text_color=theme["text_primary"])
-        else:
-            self.dns_lbl.configure(text="DNS: Auto", text_color=theme["text_secondary"])
+            pass
 
     def apply_theme(self, is_cyber: bool):
         theme = CYBER_THEME if is_cyber else PERFORMANCE_THEME

@@ -366,26 +366,23 @@ class OverlayWindow(ctk.CTkToplevel):
 
         try:
             data = self.collector.snapshot
+            preset = self._theme_engine.current
+            panel = self._panel
+            for widget_key, data_key, suffix in self._METRIC_MAP:
+                panel.set_value(widget_key, _fmt(data.get(data_key), suffix), color=preset.value_color)
+
+            # Re-position if the text expansion caused the window to grow (prevents spilling off-screen in horizontal mode)
+            current_req_width = self.winfo_reqwidth()
+            current_req_height = self.winfo_reqheight()
+            if getattr(self, "_last_req_width", 0) != current_req_width or getattr(self, "_last_req_height", 0) != current_req_height:
+                self._last_req_width = current_req_width
+                self._last_req_height = current_req_height
+                self._update_position()
         except Exception:
-            self.after(500, self._update_metrics)
-            return
-
-        # Pass color explicitly; panel's set_value dirty-checks internally
-        # so it won't redraw unless the value or color actually changed.
-        preset = self._theme_engine.current
-        panel = self._panel
-        for widget_key, data_key, suffix in self._METRIC_MAP:
-            panel.set_value(widget_key, _fmt(data.get(data_key), suffix), color=preset.value_color)
-
-        # Re-position if the text expansion caused the window to grow (prevents spilling off-screen in horizontal mode)
-        current_req_width = self.winfo_reqwidth()
-        current_req_height = self.winfo_reqheight()
-        if getattr(self, "_last_req_width", 0) != current_req_width or getattr(self, "_last_req_height", 0) != current_req_height:
-            self._last_req_width = current_req_width
-            self._last_req_height = current_req_height
-            self._update_position()
-
-        self.after(500, self._update_metrics)
+            pass
+        finally:
+            if not self._closed and self.winfo_exists():
+                self.after(500, self._update_metrics)
 
     # ── Cleanup ──────────────────────────────────────────────────
 

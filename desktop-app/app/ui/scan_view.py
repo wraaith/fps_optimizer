@@ -151,6 +151,12 @@ class ScanView(ctk.CTkFrame):
                 return
         except Exception:
             return
+        try:
+            self._render_scan_data(data)
+        except Exception:
+            pass
+
+    def _render_scan_data(self, data: dict):
         self._last_data = data
         for widget in self.results_frame.winfo_children():
             widget.destroy()
@@ -353,13 +359,13 @@ class ScanView(ctk.CTkFrame):
         try:
             if not self.winfo_exists():
                 return
+            for widget in self.results_frame.winfo_children():
+                widget.destroy()
+            ctk.CTkLabel(
+                self.results_frame,
+                text=f"Error: {msg}",
+                font=get_font(14, "bold"),
+                text_color="#ff4d4f"
+            ).grid(row=0, column=0, pady=20)
         except Exception:
-            return
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
-        ctk.CTkLabel(
-            self.results_frame,
-            text=f"Error: {msg}",
-            font=get_font(14, "bold"),
-            text_color="#ff4d4f"
-        ).grid(row=0, column=0, pady=20)
+            pass

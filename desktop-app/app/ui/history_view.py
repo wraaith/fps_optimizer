@@ -235,7 +235,10 @@ class HistoryView(ctk.CTkFrame):
 
         # Render each session card
         for idx, s in enumerate(sessions):
-            self._render_session_card(idx, s)
+            try:
+                self._render_session_card(idx, s)
+            except Exception:
+                pass
 
     def _render_empty_state(self) -> None:
         theme = get_theme()
@@ -315,7 +318,7 @@ class HistoryView(ctk.CTkFrame):
         )
         title_lbl.grid(row=0, column=0, sticky="w")
 
-        duration_min = session.get("duration_minutes", 0.0)
+        duration_min = float(session.get("duration_minutes") or 0.0)
         time_str = f"{session.get('start_time', '')}  ·  ⏱ {duration_min:.1f} mins"
         time_lbl = ctk.CTkLabel(
             header_row,
@@ -330,10 +333,13 @@ class HistoryView(ctk.CTkFrame):
         stats_row.pack(fill="x", padx=14, pady=(0, 8))
         stats_row.grid_columnconfigure(1, weight=1)
 
-        baseline = session.get("baseline_fps", 0.0)
-        boosted = session.get("avg_fps", 0.0)
-        gain_fps = session.get("fps_gain", 0.0)
-        gain_pct = session.get("fps_gain_pct", 0.0)
+        baseline = float(session.get("baseline_fps") or 0.0)
+        boosted = float(session.get("avg_fps") or 0.0)
+        gain_fps = float(session.get("fps_gain") or 0.0)
+        gain_pct = float(session.get("fps_gain_pct") or 0.0)
+        low_1pct = float(session.get("low_1pct_fps") or 0.0)
+        peak_fps = float(session.get("peak_fps") or 0.0)
+        ram_freed = float(session.get("ram_freed_mb") or 0.0)
 
         fps_comp_text = f"Baseline: {baseline:.0f} FPS  ➜  Boosted: {boosted:.0f} FPS"
         fps_comp_lbl = ctk.CTkLabel(
@@ -361,10 +367,10 @@ class HistoryView(ctk.CTkFrame):
         sub_row.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         sub_stats = [
-            f"🎯 1% Low: {session.get('low_1pct_fps', 0):.0f} FPS",
-            f"⚡ Peak: {session.get('peak_fps', 0):.0f} FPS",
+            f"🎯 1% Low: {low_1pct:.0f} FPS",
+            f"⚡ Peak: {peak_fps:.0f} FPS",
             f"🛡️ Pacing: {session.get('stability_score', '95%')}",
-            f"💾 Purged: {session.get('ram_freed_mb', 0):,.0f} MB",
+            f"💾 Purged: {ram_freed:,.0f} MB",
         ]
         for c_idx, sub_text in enumerate(sub_stats):
             ctk.CTkLabel(

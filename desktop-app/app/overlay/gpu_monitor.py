@@ -140,6 +140,29 @@ class WmiBackend(GPUBackend):
     """Uses WMI — works with any vendor but usually can't get temp/usage."""
 
     def __init__(self):
+        self._name = "Unknown GPU"
+        # 1. Try Windows Registry (zero COM, zero crash, instant)
+        try:
+            import winreg
+            reg_path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+            for idx in range(10):
+                try:
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{reg_path}\\{idx:04d}") as sk:
+                        desc, _ = winreg.QueryValueEx(sk, "DriverDesc")
+                        desc_str = str(desc).strip()
+                        if desc_str:
+                            self._name = desc_str
+                            desc_upper = desc_str.upper()
+                            if not any(kw in desc_upper for kw in ("INTEL", "MICROSOFT BASIC", "VEGA GRAPHICS")):
+                                return
+                except Exception:
+                    pass
+            if self._name != "Unknown GPU":
+                return
+        except Exception:
+            pass
+
+        # 2. Fallback to WMI if registry had no adapters
         _com_inited = False
         try:
             import pythoncom
@@ -152,21 +175,18 @@ class WmiBackend(GPUBackend):
             import wmi
             c = wmi.WMI()
             gpus = c.Win32_VideoController()
-            if not gpus:
-                raise RuntimeError("no GPU found via WMI")
-            # Prefer dedicated GPU
-            self._name = "Unknown GPU"
-            for gpu in gpus:
-                name = str(getattr(gpu, "Name", "") or "")
-                if name:
-                    self._name = name
-                    # Keep going to find a non-integrated one
-                    name_upper = name.upper()
-                    is_integrated = any(kw in name_upper for kw in (
-                        "INTEL", "MICROSOFT BASIC", "VEGA GRAPHICS"
-                    ))
-                    if not is_integrated:
-                        break
+            if gpus:
+                for gpu in gpus:
+                    name = str(getattr(gpu, "Name", "") or "")
+                    if name:
+                        self._name = name
+                        name_upper = name.upper()
+                        if not any(kw in name_upper for kw in ("INTEL", "MICROSOFT BASIC", "VEGA GRAPHICS")):
+                            break
+            c = None
+            gpus = None
+        except Exception:
+            pass
         finally:
             if _com_inited:
                 try:

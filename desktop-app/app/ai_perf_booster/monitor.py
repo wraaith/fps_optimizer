@@ -1,26 +1,18 @@
 """
 AI System Performance Booster - Monitoring & Data Collection Module
-Collects real-time system + per-process metrics using psutil.
+Collects real-time system metrics using psutil.
+Optimized for minimal overhead on low-end hardware.
 No processes are ever terminated by this module.
 """
 import psutil
 import time
-import csv
-import os
 from datetime import datetime
-
-METRICS_FILE = os.path.join(os.path.dirname(__file__), "metrics_log.csv")
 
 FIELDS = [
     "timestamp", "cpu_percent", "mem_percent", "mem_available_mb",
     "swap_percent", "disk_read_mb", "disk_write_mb",
-    "net_sent_mb", "net_recv_mb", "num_processes", "num_threads"
+    "net_sent_mb", "net_recv_mb"
 ]
-
-def init_log():
-    if not os.path.exists(METRICS_FILE):
-        with open(METRICS_FILE, "w", newline="") as f:
-            csv.writer(f).writerow(FIELDS)
 
 def sample_system_metrics(prev_disk=None, prev_net=None):
     # Non-blocking CPU query based on OS tick delta (0ms delay)
@@ -48,8 +40,6 @@ def sample_system_metrics(prev_disk=None, prev_net=None):
         "disk_write_mb": round(disk_write_mb, 3),
         "net_sent_mb": round(net_sent_mb, 3),
         "net_recv_mb": round(net_recv_mb, 3),
-        "num_processes": 0,
-        "num_threads": 0,
     }
     return row, disk, net
 
@@ -72,19 +62,3 @@ def top_memory_processes(n=10):
     procs.sort(key=lambda x: x["mem_mb"], reverse=True)
     return procs[:n]
 
-def run_monitor(duration_sec=60, interval_sec=3):
-    init_log()
-    prev_disk = psutil.disk_io_counters()
-    prev_net = psutil.net_io_counters()
-    rows = []
-    start = time.time()
-    while time.time() - start < duration_sec:
-        row, prev_disk, prev_net = sample_system_metrics(prev_disk, prev_net)
-        rows.append(row)
-        with open(METRICS_FILE, "a", newline="") as f:
-            csv.DictWriter(f, fieldnames=FIELDS).writerow(row)
-        time.sleep(interval_sec)
-    return rows
-
-if __name__ == "__main__":
-    run_monitor(duration_sec=60, interval_sec=3)

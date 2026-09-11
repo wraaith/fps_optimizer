@@ -28,7 +28,12 @@ BLOATWARE_PROCESSES = {
     "onedrive.exe", "epicgameslauncher.exe", "ccleaner64.exe", 
     "ccleaner.exe", "adobeipcbroker.exe", "creative cloud.exe", 
     "phoneexperiencehost.exe", "yourphone.exe", "skype.exe", 
-    "teams.exe", "zoom.exe", "webex.exe", "slack.exe", "spotify.exe"
+    "teams.exe", "zoom.exe", "webex.exe", "slack.exe", "spotify.exe",
+    # Extra bloatware common on low-end systems
+    "updateassistant.exe", "searchprotocolhost.exe",
+    "microsoftedgeupdate.exe", "googlechromeservice.exe",
+    "gamingservices.exe", "gamingservicesnet.exe",
+    "dropbox.exe", "googledrivesync.exe", "jusched.exe",
 }
 
 def get_current_available_ram_mb() -> float:
@@ -43,11 +48,22 @@ def get_top_memory_consumers(n: int = 15) -> list:
     Format: [{"pid": int, "name": str, "memory_mb": float}]
     """
     current_pid = os.getpid()
-    protected_pids = {current_pid}
+    protected_pids = {current_pid, 0, 4}
     try:
         current_proc = psutil.Process(current_pid)
         for child in current_proc.children(recursive=True):
             protected_pids.add(child.pid)
+        parent = current_proc.parent()
+        if parent:
+            protected_pids.add(parent.pid)
+    except Exception:
+        pass
+
+    try:
+        from optimize.ai_boost_service import get_ai_boost_service
+        boost_svc = get_ai_boost_service()
+        if boost_svc and boost_svc.is_running and getattr(boost_svc, "_active_game_pid", None):
+            protected_pids.add(boost_svc._active_game_pid)
     except Exception:
         pass
 
@@ -91,10 +107,33 @@ def terminate_processes(pids: list) -> dict:
     """
     Attempts to terminate the list of PIDs.
     Returns a dictionary summarizing successes and failures.
+    Protects current process, parent, children, active game, and system processes.
     """
     results = {"success": 0, "failed": 0, "errors": []}
     
+    current_pid = os.getpid()
+    safe_protected = {current_pid, 0, 4}
+    try:
+        cur = psutil.Process(current_pid)
+        for child in cur.children(recursive=True):
+            safe_protected.add(child.pid)
+        parent = cur.parent()
+        if parent:
+            safe_protected.add(parent.pid)
+    except Exception:
+        pass
+
+    try:
+        from optimize.ai_boost_service import get_ai_boost_service
+        boost_svc = get_ai_boost_service()
+        if boost_svc and boost_svc.is_running and getattr(boost_svc, "_active_game_pid", None):
+            safe_protected.add(boost_svc._active_game_pid)
+    except Exception:
+        pass
+
     for pid in pids:
+        if pid in safe_protected or pid <= 4:
+            continue
         try:
             p = psutil.Process(pid)
             p.terminate()
@@ -453,11 +492,12 @@ def check_has_ssd() -> bool:
             return False
 
 
-def lower_background_priority(exclude_names=None, exclude_pids=None, mem_threshold_mb=100) -> dict:
+def lower_background_priority(exclude_names=None, exclude_pids=None, mem_threshold_mb=60) -> dict:
     """
     Lower CPU scheduling priority of heavy background processes
     (above mem_threshold_mb) to BELOW_NORMAL without killing them.
     Skips system processes, active game PIDs, and whitelisted names.
+    Threshold lowered to 60MB for low-end PCs (was 100MB).
     Returns {"lowered": int, "skipped": int}.
     """
     exclude = set(n.lower() for n in (exclude_names or []))

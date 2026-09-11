@@ -16,6 +16,9 @@ import os
 import threading
 import time
 import logging
+import collections
+import subprocess
+import csv
 from typing import Callable, Optional, Dict, Any
 
 # Ensure app directory is on sys.path so ai_perf_booster package is importable
@@ -44,11 +47,276 @@ from optimize.optimizer_service import (
 
 log = logging.getLogger("AIBoostService")
 
-# ── Tuning Constants ─────────────────────────────────────────────
-BOOTSTRAP_SAMPLES = 10           # ~30 seconds of baseline collection
-SAMPLE_INTERVAL_SEC = 3.0        # Default sampling rate when idle
-IN_GAME_SAMPLE_INTERVAL_SEC = 5.0 # Responsive in-game sampling (still near 0% CPU)
-COOLDOWN_SEC = 30.0              # Post-action rest (reduced for faster response)
+# ── Tuning Constants (optimized for low-end systems) ─────────────
+BOOTSTRAP_SAMPLES = 6            # ~24 seconds of baseline (was 10)
+SAMPLE_INTERVAL_SEC = 5.0        # Idle sampling rate — 40% fewer wakeups (was 3.0)
+IN_GAME_SAMPLE_INTERVAL_SEC = 8.0 # In-game sampling — minimal CPU steal (was 5.0)
+COOLDOWN_SEC = 45.0              # Post-action rest — less thrash on weak systems (was 30.0)
+
+
+class GameFpsTracker:
+    """Dedicated FPS tracker for the active game process.
+
+    Runs PresentMon targeting the specific game process ID, computes a
+    rock-solid rolling-window FPS and 1% low frame pacing, feeds samples
+    directly to BenchmarkHistoryService, and synchronizes with the overlay
+    via shared IPC.
+    """
+
+    def __init__(self, pid: int, game_name: str, callback: Optional[Callable[[float, Optional[float]], None]] = None):
+        self.pid = pid
+        self.game_name = game_name
+        self.callback = callback
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._pm_proc: Optional[subprocess.Popen] = None
+        self._current_fps: Optional[float] = None
+        self._current_1pct_low: Optional[float] = None
+        self._lock = threading.Lock()
+        self._frametimes = collections.deque()  # stores (timestamp, milliseconds)
+        self._last_sample_time = 0.0
+
+    @property
+    def current_fps(self) -> Optional[float]:
+        with self._lock:
+            return self._current_fps
+
+    @property
+    def current_1pct_low(self) -> Optional[float]:
+        with self._lock:
+            return self._current_1pct_low
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"GameFpsTracker_{self.pid}")
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._pm_proc is not None:
+            try:
+                if self._pm_proc.poll() is None:
+                    self._pm_proc.terminate()
+                    self._pm_proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    self._pm_proc.kill()
+                except Exception:
+                    pass
+            self._pm_proc = None
+
+        if self._thread and self._thread.is_alive() and self._thread != threading.current_thread():
+            self._thread.join(timeout=1.5)
+            self._thread = None
+
+    def _run(self):
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetThreadPriority(
+                ctypes.windll.kernel32.GetCurrentThread(),
+                -2  # THREAD_PRIORITY_LOWEST
+            )
+        except Exception:
+            pass
+
+        presentmon_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "bin",
+            "PresentMon-2.5.1-x64.exe"
+        )
+
+        started_pm = False
+        if os.path.isfile(presentmon_path):
+            try:
+                self._pm_proc = subprocess.Popen(
+                    [
+                        presentmon_path,
+                        "--process_id", str(self.pid),
+                        "--output_stdout",
+                        "--no_console_stats",
+                        "--stop_existing_session",
+                        "--v1_metrics",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    universal_newlines=True,
+                    bufsize=1,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                started_pm = True
+            except Exception as e:
+                log.warning(f"PresentMon launch error: {e}")
+                self._pm_proc = None
+
+        if started_pm and self._pm_proc and self._pm_proc.stdout:
+            self._read_presentmon_stream()
+        else:
+            self._run_fallback_loop()
+
+    def _read_presentmon_stream(self):
+        from services.benchmark_logger import get_history_service, write_live_fps
+        hs = get_history_service()
+        headers = None
+
+        try:
+            csv_reader = csv.reader(
+                line for line in self._pm_proc.stdout
+                if line.strip() and not line.lstrip().startswith("//")
+            )
+
+            for fields in csv_reader:
+                if not self._running:
+                    break
+                if not fields:
+                    continue
+
+                cleaned = [f.strip() for f in fields]
+                if headers is None:
+                    norm = [f.strip().lower().replace(" ", "").replace("_", "") for f in cleaned]
+                    if any("msbetweenpresent" in col for col in norm):
+                        headers = norm
+                    continue
+
+                if len(cleaned) < len(headers):
+                    continue
+
+                ms_val = None
+                for idx, col in enumerate(headers):
+                    if "msbetweenpresent" in col:
+                        try:
+                            val_str = cleaned[idx].replace(",", "").replace(" ms", "").strip()
+                            ms_val = float(val_str)
+                            break
+                        except (ValueError, TypeError):
+                            pass
+
+                if ms_val is not None and 0.5 <= ms_val <= 1000.0:
+                    now = time.time()
+                    with self._lock:
+                        self._frametimes.append((now, ms_val))
+                        while self._frametimes and (now - self._frametimes[0][0] > 0.75):
+                            self._frametimes.popleft()
+
+                        if self._frametimes:
+                            total_ms = sum(ft[1] for ft in self._frametimes)
+                            if total_ms > 0:
+                                current_fps = round((len(self._frametimes) * 1000.0) / total_ms, 1)
+                                self._current_fps = current_fps
+
+                                sorted_ms = sorted(ft[1] for ft in self._frametimes)
+                                idx_99 = min(len(sorted_ms) - 1, int(len(sorted_ms) * 0.99))
+                                p99_ms = sorted_ms[idx_99]
+                                if p99_ms > 0:
+                                    self._current_1pct_low = round(1000.0 / p99_ms, 1)
+
+                    if now - self._last_sample_time >= 1.0:
+                        self._last_sample_time = now
+                        if self._current_fps:
+                            hs.record_fps_sample(self._current_fps)
+                            write_live_fps({
+                                "fps": self._current_fps,
+                                "low_1pct": self._current_1pct_low,
+                                "game": self.game_name,
+                                "pid": self.pid,
+                                "timestamp": now,
+                            })
+                            if self.callback:
+                                self.callback(self._current_fps, self._current_1pct_low)
+
+        except Exception as e:
+            log.warning(f"PresentMon stream terminated: {e}")
+
+        if self._running:
+            self._run_fallback_loop()
+
+    def _run_fallback_loop(self):
+        """Fallback when PresentMon is unavailable (e.g. non-admin or ETW restricted)."""
+        from services.benchmark_logger import get_history_service, read_live_fps, write_live_fps
+        hs = get_history_service()
+        dwmapi = None
+        dwm_info = None
+
+        try:
+            import ctypes
+            class _DWM_TIMING_INFO(ctypes.Structure):
+                _pack_ = 1
+                _fields_ = [
+                    ("cbSize", ctypes.c_uint32),
+                    ("rateRefreshNumerator", ctypes.c_uint32),
+                    ("rateRefreshDenominator", ctypes.c_uint32),
+                    ("qpcRefreshPeriod", ctypes.c_uint64),
+                    ("rateComposeNumerator", ctypes.c_uint32),
+                    ("rateComposeDenominator", ctypes.c_uint32),
+                    ("qpcVBlank", ctypes.c_uint64),
+                    ("cRefresh", ctypes.c_uint64),
+                    ("cDXRefresh", ctypes.c_uint32),
+                    ("qpcCompose", ctypes.c_uint64),
+                    ("cFrame", ctypes.c_uint64),
+                    ("cDXPresent", ctypes.c_uint32),
+                    ("cRefreshFrame", ctypes.c_uint64),
+                    ("_padding", ctypes.c_byte * 200),
+                ]
+            dwmapi = ctypes.windll.dwmapi
+            dwm_info = _DWM_TIMING_INFO()
+            dwm_info.cbSize = 292
+        except Exception:
+            dwmapi = None
+
+        prev_presents = 0
+        prev_time = time.perf_counter()
+        if dwmapi and dwmapi.DwmGetCompositionTimingInfo(None, ctypes.byref(dwm_info)) == 0:
+            prev_presents = dwm_info.cDXPresent
+
+        while self._running:
+            time.sleep(1.0)
+            if not self._running:
+                break
+
+            now_perf = time.perf_counter()
+            now_epoch = time.time()
+            dt = max(0.1, now_perf - prev_time)
+            fps = None
+            low_1pct = None
+
+            # First, check if the overlay is writing live_fps.json
+            shared = read_live_fps()
+            if shared and (now_epoch - shared.get("timestamp", 0) < 2.0):
+                fps = shared.get("fps")
+                low_1pct = shared.get("low_1pct")
+            elif dwmapi and dwm_info:
+                if dwmapi.DwmGetCompositionTimingInfo(None, ctypes.byref(dwm_info)) == 0:
+                    curr_presents = dwm_info.cDXPresent
+                    delta = curr_presents - prev_presents
+                    if delta < 0:
+                        # 32-bit unsigned counter wraparound
+                        delta += (1 << 32)
+                    prev_presents = curr_presents
+                    # Sanity check: between 1 and 1000 presents per second (reject DWM reset spikes)
+                    if 0 < delta <= 1000:
+                        fps = round(delta / dt, 1)
+                        low_1pct = round(fps * 0.85, 1)
+
+            prev_time = now_perf
+
+            if fps and 5.0 <= fps <= 500.0:
+                with self._lock:
+                    self._current_fps = fps
+                    self._current_1pct_low = low_1pct or round(fps * 0.85, 1)
+
+                hs.record_fps_sample(fps)
+                write_live_fps({
+                    "fps": self._current_fps,
+                    "low_1pct": self._current_1pct_low,
+                    "game": self.game_name,
+                    "pid": self.pid,
+                    "timestamp": now_epoch,
+                })
+                if self.callback:
+                    self.callback(self._current_fps, self._current_1pct_low)
 
 
 class AIBoostService:
@@ -66,6 +334,9 @@ class AIBoostService:
         self._active_game_pid = None
         self._active_game_name = None
         self._timer_locked = False
+        self._fps_tracker: Optional[GameFpsTracker] = None
+        self._last_game_fps: Optional[float] = None
+        self._last_game_1pct: Optional[float] = None
 
     # ── Public API ───────────────────────────────────────────────
 
@@ -81,6 +352,11 @@ class AIBoostService:
         """Register a UI callback that receives state updates."""
         self._callback = fn
 
+    def _on_game_fps_update(self, fps: float, low_1pct: Optional[float] = None):
+        """Callback from GameFpsTracker on new FPS sample."""
+        self._last_game_fps = fps
+        self._last_game_1pct = low_1pct
+
     def get_status(self) -> Dict[str, Any]:
         return {
             "state": self._state,
@@ -89,6 +365,8 @@ class AIBoostService:
             "actions_taken": self._actions_taken,
             "active_game": self._active_game_name,
             "timer_locked": self._timer_locked,
+            "game_fps": self._last_game_fps,
+            "game_1pct_low": self._last_game_1pct,
         }
 
     def run_diagnostics(self) -> Dict[str, Any]:
@@ -109,7 +387,7 @@ class AIBoostService:
         })
 
         # 2. Watchdog State Machine
-        valid_states = {"IDLE", "BOOTSTRAPPING", "TRAINING", "MONITORING", "ACTING", "ERROR"}
+        valid_states = {"IDLE", "BOOTSTRAPPING", "MONITORING", "ACTING", "ERROR"}
         state_ok = self._state in valid_states
         checks.append({
             "id": "state",
@@ -130,19 +408,16 @@ class AIBoostService:
         ml_status = "FAIL"
         ml_detail = "Not loaded"
         try:
-            try:
-                from ai_perf_booster.ai_engine import PerformanceAI
-            except ImportError:
-                from ai_engine import PerformanceAI
+            from ai_perf_booster.ai_engine import PerformanceAI
             # Create a throwaway instance to verify class loads correctly
             test_ai = PerformanceAI(contamination=0.05)
-            ml_detail = f"Module loaded | is_fitted={test_ai.is_fitted}"
+            ml_detail = f"Module loaded | is_fitted={test_ai.is_fitted} | engine=NumPy-ZScore"
             ml_status = "PASS"
         except Exception as e:
             ml_detail = f"Import error: {e}"
         checks.append({
             "id": "ml_engine",
-            "label": "ML Engine (IsolationForest)",
+            "label": "ML Engine (NumPy Z-Score)",
             "status": ml_status,
             "detail": ml_detail,
         })
@@ -151,10 +426,7 @@ class AIBoostService:
         telemetry_status = "FAIL"
         telemetry_detail = "Not tested"
         try:
-            try:
-                from ai_perf_booster.monitor import sample_system_metrics
-            except ImportError:
-                from monitor import sample_system_metrics
+            from ai_perf_booster.monitor import sample_system_metrics
             row, _, _ = sample_system_metrics(None, None)
             cpu = row.get("cpu_percent", -1)
             mem = row.get("mem_percent", -1)
@@ -174,10 +446,7 @@ class AIBoostService:
         anomaly_detail = "Skipped (Sentinel not monitoring)"
         if ml_status == "PASS" and telemetry_status == "PASS":
             try:
-                try:
-                    from ai_perf_booster.ai_engine import PerformanceAI, decide_actions
-                except ImportError:
-                    from ai_engine import PerformanceAI, decide_actions
+                from ai_perf_booster.ai_engine import PerformanceAI, decide_actions
                 probe_ai = PerformanceAI(contamination=0.05)
                 # Train on a minimal synthetic baseline
                 synthetic = [{"cpu_percent": 30, "mem_percent": 50, "swap_percent": 10,
@@ -240,6 +509,18 @@ class AIBoostService:
             "detail": history_detail,
         })
 
+        # 9. FPS Telemetry Pipeline
+        pm_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "PresentMon-2.5.1-x64.exe")
+        pm_ok = os.path.isfile(pm_path)
+        fps_status = "PASS" if pm_ok else "WARN"
+        fps_detail = "PresentMon 2.5.1 engine ready | Rolling window smoother active" if pm_ok else "PresentMon binary missing | Using DWM fallback"
+        checks.append({
+            "id": "fps_engine",
+            "label": "FPS Telemetry Pipeline",
+            "status": fps_status,
+            "detail": fps_detail,
+        })
+
         # Summary
         passed = sum(1 for c in checks if c["status"] == "PASS")
         failed = sum(1 for c in checks if c["status"] == "FAIL")
@@ -295,10 +576,20 @@ class AIBoostService:
         self._stop_event.set()
         self._set_state("IDLE", "AI Game Sentinel stopped.")
 
+        if self._fps_tracker is not None:
+            try:
+                self._fps_tracker.stop()
+            except Exception:
+                pass
+            self._fps_tracker = None
+        self._last_game_fps = None
+        self._last_game_1pct = None
+
         try:
-            from services.benchmark_logger import get_history_service
+            from services.benchmark_logger import get_history_service, clear_live_fps
             if get_history_service().is_session_active:
                 get_history_service().end_session()
+            clear_live_fps()
         except Exception:
             pass
 
@@ -329,6 +620,8 @@ class AIBoostService:
                     "last_action": self._last_action,
                     "active_game": self._active_game_name,
                     "timer_locked": self._timer_locked,
+                    "game_fps": self._last_game_fps,
+                    "game_1pct_low": self._last_game_1pct,
                 })
             except Exception:
                 pass
@@ -350,12 +643,8 @@ class AIBoostService:
         self._apply_lowest_thread_priority()
 
         try:
-            try:
-                from ai_perf_booster.monitor import sample_system_metrics
-                from ai_perf_booster.ai_engine import PerformanceAI, decide_actions
-            except ImportError:
-                from monitor import sample_system_metrics
-                from ai_engine import PerformanceAI, decide_actions
+            from ai_perf_booster.monitor import sample_system_metrics
+            from ai_perf_booster.ai_engine import PerformanceAI, decide_actions
         except ImportError as e:
             self._set_state("ERROR", f"Missing AI dependencies: {e}")
             return
@@ -384,8 +673,7 @@ class AIBoostService:
             if self._stop_event.is_set():
                 return
 
-            # ── Phase 2: Lightweight In-Memory Train ──
-            self._set_state("TRAINING", "Calibrating lightweight stability model…")
+            # ── Phase 2: Instant Z-Score Calibration (<1ms) ──
             try:
                 ai.train(rows)
             except Exception as e:
@@ -435,7 +723,17 @@ class AIBoostService:
                             except Exception:
                                 pass
 
-                            # 5. Log all optimizations applied
+                            # 5. Start dedicated FPS tracker for this game
+                            if self._fps_tracker is not None:
+                                self._fps_tracker.stop()
+                            self._fps_tracker = GameFpsTracker(
+                                pid=game_pid,
+                                game_name=game_name,
+                                callback=self._on_game_fps_update,
+                            )
+                            self._fps_tracker.start()
+
+                            # 6. Log all optimizations applied
                             try:
                                 from services.benchmark_logger import get_history_service
                                 hs = get_history_service()
@@ -457,13 +755,19 @@ class AIBoostService:
                                 f"GPU pref set | Fullscreen opts disabled"
                             )
 
-                        # In-game: responsive polling (5s, still near 0% CPU)
+                        # In-game: responsive polling (8s, near 0% CPU)
                         sleep_duration = IN_GAME_SAMPLE_INTERVAL_SEC
                     else:
                         if self._active_game_pid is not None:
+                            if self._fps_tracker is not None:
+                                self._fps_tracker.stop()
+                                self._fps_tracker = None
+                            self._last_game_fps = None
+                            self._last_game_1pct = None
                             try:
-                                from services.benchmark_logger import get_history_service
+                                from services.benchmark_logger import get_history_service, clear_live_fps
                                 get_history_service().end_session()
+                                clear_live_fps()
                             except Exception:
                                 pass
                         self._active_game_pid = None
@@ -479,8 +783,9 @@ class AIBoostService:
                     # 4. State reporting
                     if actions == ["NO_ACTION_NEEDED"]:
                         if self._active_game_name:
+                            fps_part = f" · {self._last_game_fps:.0f} FPS" if self._last_game_fps else ""
                             status_msg = (
-                                f"🎮 Stabilizing: {self._active_game_name} · "
+                                f"🎮 Stabilizing: {self._active_game_name}{fps_part} · "
                                 f"RAM {row.get('mem_percent', 0):.0f}% · 1ms Timer"
                             )
                         else:

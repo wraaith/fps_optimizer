@@ -4,11 +4,43 @@ import ctypes.wintypes
 import os
 import subprocess
 import tkinter as tk
+import faulthandler
+import time
 
 # Ensure app directory is on sys.path for robust relative module imports
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
+
+_CRASH_LOG = os.path.join(os.path.dirname(_APP_DIR), "crash.log")
+try:
+    _crash_file = open(_CRASH_LOG, "a", encoding="utf-8")
+    faulthandler.enable(file=_crash_file)
+except Exception:
+    try:
+        faulthandler.enable()
+    except Exception:
+        pass
+
+def _global_exception_handler(exctype, value, tb):
+    import traceback
+    err_str = "".join(traceback.format_exception(exctype, value, tb))
+    print(f"[FATAL ERROR]\n{err_str}", file=sys.stderr)
+    try:
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n--- Unhandled Exception at {time.ctime()} ---\n{err_str}\n")
+    except Exception:
+        pass
+    try:
+        import tkinter.messagebox as mb
+        mb.showerror(
+            "FPS Optimizer Error",
+            f"An unexpected error occurred:\n\n{value}\n\nDetails have been logged to crash.log."
+        )
+    except Exception:
+        pass
+
+sys.excepthook = _global_exception_handler
 
 # ── DPI awareness (must run BEFORE any Tk window is created) ──────────
 try:
@@ -33,10 +65,7 @@ REQUIRED_PACKAGES = {
     "wmi": "WMI>=1.5",
     "win32api": "pywin32>=300",
     "pynvml": "nvidia-ml-py>=12.0",
-    "pandas": "pandas>=2.0.0",
     "numpy": "numpy>=1.24.0",
-    "sklearn": "scikit-learn>=1.3.0",
-    "joblib": "joblib>=1.3.0",
 }
 
 
@@ -95,6 +124,18 @@ def launch_main_window():
     from ui.main_window import MainWindow
 
     app = MainWindow()
+
+    def _tk_callback_error(exc, val, tb):
+        import traceback
+        err_str = "".join(traceback.format_exception(exc, val, tb))
+        print(f"[Tkinter Callback Error]\n{err_str}", file=sys.stderr)
+        try:
+            with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+                f.write(f"\n--- Tkinter Error at {time.ctime()} ---\n{err_str}\n")
+        except Exception:
+            pass
+
+    app.report_callback_exception = _tk_callback_error
     app.mainloop()
 
 

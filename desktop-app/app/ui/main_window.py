@@ -360,8 +360,16 @@ class MainWindow(ctk.CTk):
     # ── View switching ──────────────────────────────────────────
 
     def _clear_main(self):
+        if self.current_view is not None and hasattr(self.current_view, "destroy"):
+            try:
+                self.current_view.destroy()
+            except Exception:
+                pass
         for widget in self.main_frame.winfo_children():
-            widget.destroy()
+            try:
+                widget.destroy()
+            except Exception:
+                pass
         self.current_view = None
 
     def show_scan(self):
@@ -487,10 +495,19 @@ class MainWindow(ctk.CTk):
         def _orphan_cleanup_worker():
             try:
                 current_pid = os.getpid()
+                protected_pids = {current_pid}
+                try:
+                    p = psutil.Process(current_pid)
+                    if p.parent():
+                        protected_pids.add(p.parent().pid)
+                except Exception:
+                    pass
+
                 for proc in psutil.process_iter(['pid', 'name']):
                     try:
+                        pid = proc.info.get('pid')
                         pname = (proc.info.get('name') or '').lower()
-                        if proc.info['pid'] != current_pid and 'python' in pname:
+                        if pid not in protected_pids and 'python' in pname:
                             cmdline = proc.cmdline()
                             if any('--overlay' in arg for arg in cmdline):
                                 proc.terminate()

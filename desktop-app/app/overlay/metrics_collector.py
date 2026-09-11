@@ -17,6 +17,7 @@ The latest values are available through ``snapshot`` or ``get_metrics()``.
 """
 
 import atexit
+import collections
 import csv
 import os
 import subprocess
@@ -68,11 +69,12 @@ def _update_wmi_temp_loop():
             else:
                 _wmi_temp = None
                 
-            time.sleep(2.0)
+            time.sleep(4.0)  # 4s is plenty for temperature (was 2.0, saves CPU on low-end)
     except Exception:
         _wmi_failed = True
         _wmi_temp = None
     finally:
+        _wmi_client = None
         if _com_inited:
             try:
                 import pythoncom
@@ -253,6 +255,7 @@ class MetricsCollector:
         self._last_fps_time: float = 0.0
         self._current_cpu_w: Optional[float] = None
         self._current_gpu_w: Optional[float] = None
+        self._frametimes = collections.deque()
 
         self._presentmon_started = False
 
@@ -439,6 +442,31 @@ class MetricsCollector:
         "explorer.exe",
         "unknown",
         "desktop window manager",
+        "python.exe",
+        "pythonw.exe",
+        "fps_optimizer.exe",
+        "chrome.exe",
+        "msedge.exe",
+        "firefox.exe",
+        "brave.exe",
+        "discord.exe",
+        "spotify.exe",
+        "code.exe",
+        "devenv.exe",
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "taskmgr.exe",
+        "shellexperiencehost.exe",
+        "searchhost.exe",
+        "startmenuexperiencehost.exe",
+        "applicationframehost.exe",
+        "lockapp.exe",
+        "notepad.exe",
+        "calculator.exe",
+        "slack.exe",
+        "teams.exe",
+        "steamwebhelper.exe",
     })
 
     def _is_target_application(self, application: str) -> bool:
@@ -555,19 +583,34 @@ class MetricsCollector:
 
                 if (
                     milliseconds is not None
-                    and milliseconds > 0
+                    and 0.5 <= milliseconds <= 1000.0
                 ):
-                    fps = 1000.0 / milliseconds
-
+                    now = time.time()
                     with self._lock:
-                        self._current_fps = round(fps, 1)
-                        self._last_fps_time = time.time()
+                        self._frametimes.append((now, milliseconds))
+                        # Keep a sliding 0.75-second window for true rolling FPS
+                        while self._frametimes and (now - self._frametimes[0][0] > 0.75):
+                            self._frametimes.popleft()
+
+                        if self._frametimes:
+                            total_ms = sum(ft[1] for ft in self._frametimes)
+                            if total_ms > 0:
+                                fps = (len(self._frametimes) * 1000.0) / total_ms
+                                self._current_fps = round(min(1000.0, max(1.0, fps)), 1)
+                                self._last_fps_time = now
 
                     try:
-                        from services.benchmark_logger import get_history_service
+                        from services.benchmark_logger import get_history_service, write_live_fps
                         hs = get_history_service()
                         if hs.is_session_active and hs.is_sentinel_running():
                             hs.record_fps_sample(self._current_fps)
+                        low_1pct = round(self._current_fps * 0.85, 1)
+                        write_live_fps({
+                            "fps": self._current_fps,
+                            "low_1pct": low_1pct,
+                            "game": application or "Game",
+                            "timestamp": now,
+                        })
                     except Exception:
                         pass
 
@@ -675,7 +718,17 @@ class MetricsCollector:
             except Exception:
                 data["ram_usage"] = None
 
-            # PresentMon values
+            # PresentMon / Live Sentinel IPC values
+            try:
+                from services.benchmark_logger import read_live_fps
+                ipc_data = read_live_fps()
+                if ipc_data and (time.time() - ipc_data.get("timestamp", 0) < 2.5):
+                    with self._lock:
+                        self._current_fps = ipc_data.get("fps")
+                        self._last_fps_time = time.time()
+            except Exception:
+                pass
+
             with self._lock:
                 if self._last_fps_time and (time.time() - self._last_fps_time > 2.5):
                     self._current_fps = None

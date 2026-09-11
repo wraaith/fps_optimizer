@@ -944,37 +944,37 @@ class OptimizeView(ctk.CTkFrame):
         t.start()
 
     def _update_hud_display(self, mb: dict, ai_stat: dict):
-        """Render live memory breakdown and scheduler status on the main thread."""
+        """Render live memory breakdown and scheduler status on the main thread safely."""
         try:
             if not self.winfo_exists():
                 return
+
+            theme = get_theme()
+            is_cyber = is_cyber_mode()
+
+            pct = mb.get("percent", 0.0) / 100.0
+            self.hud_progress.set(min(max(pct, 0.0), 1.0))
+
+            used_gb = mb.get("used_mb", 0.0) / 1024.0
+            total_gb = mb.get("total_mb", 0.0) / 1024.0
+            self.hud_ram_val.configure(text=f"{used_gb:.1f} GB / {total_gb:.1f} GB ({mb.get('percent', 0):.0f}%)")
+
+            cache_mb = mb.get("cached_approx_mb", 0.0)
+            self.hud_cache_val.configure(text=f"{cache_mb:,.0f} MB Reclaimable")
+            self.boost_chip_label.configure(text=f"💾 Purgeable Cache: {cache_mb:,.0f} MB")
+
+            if ai_stat.get("timer_locked"):
+                self.hud_timer_val.configure(
+                    text="● 1.0ms HIGH-RES (LOCKED)",
+                    text_color=theme["accent_green"] if is_cyber else "#00ff00"
+                )
+            else:
+                self.hud_timer_val.configure(
+                    text="○ 15.6ms (DEFAULT)",
+                    text_color=theme["text_muted"]
+                )
         except Exception:
-            return
-
-        theme = get_theme()
-        is_cyber = is_cyber_mode()
-
-        pct = mb.get("percent", 0.0) / 100.0
-        self.hud_progress.set(min(max(pct, 0.0), 1.0))
-
-        used_gb = mb.get("used_mb", 0.0) / 1024.0
-        total_gb = mb.get("total_mb", 0.0) / 1024.0
-        self.hud_ram_val.configure(text=f"{used_gb:.1f} GB / {total_gb:.1f} GB ({mb.get('percent', 0):.0f}%)")
-
-        cache_mb = mb.get("cached_approx_mb", 0.0)
-        self.hud_cache_val.configure(text=f"{cache_mb:,.0f} MB Reclaimable")
-        self.boost_chip_label.configure(text=f"💾 Purgeable Cache: {cache_mb:,.0f} MB")
-
-        if ai_stat.get("timer_locked"):
-            self.hud_timer_val.configure(
-                text="● 1.0ms HIGH-RES (LOCKED)",
-                text_color=theme["accent_green"] if is_cyber else "#00ff00"
-            )
-        else:
-            self.hud_timer_val.configure(
-                text="○ 15.6ms (DEFAULT)",
-                text_color=theme["text_muted"]
-            )
+            pass
 
     def _init_sysmain_status(self):
         """Asynchronously inspect SysMain and drive type to populate Card 4 status chip."""
@@ -1293,88 +1293,90 @@ class OptimizeView(ctk.CTkFrame):
             pass
 
     def _render_ai_status(self, data: dict):
-        """Update the Sentinel card badge and info on the main thread."""
+        """Update the Sentinel card badge and info on the main thread safely."""
         try:
             if not self.winfo_exists():
                 return
+
+            state = data.get("state", "IDLE")
+            message = data.get("message", "")
+            active_game = data.get("active_game")
+            last_action = data.get("last_action")
+            theme = get_theme()
+            is_cyber = is_cyber_mode()
+
+            if state == "IDLE":
+                self.ai_action_btn.configure(
+                    text="▶ ACTIVATE SENTINEL",
+                    fg_color=theme["accent_purple"] if is_cyber else "#262626",
+                    hover_color="#9333ea" if is_cyber else "#333333",
+                    text_color="#ffffff"
+                )
+                self.ai_status_badge.configure(
+                    text="○ Inactive · Click to activate 1.0ms lock",
+                    text_color=theme["text_secondary"]
+                )
+                self.hud_timer_val.configure(
+                    text="○ 15.6ms (DEFAULT)",
+                    text_color=theme["text_muted"]
+                )
+            elif state == "BOOTSTRAPPING":
+                self.ai_action_btn.configure(
+                    text="⏹ DEACTIVATE SENTINEL",
+                    fg_color="#00ff9f" if is_cyber else "#00aa00",
+                    hover_color="#00d685" if is_cyber else "#008800",
+                    text_color="#05060f" if is_cyber else "#ffffff"
+                )
+                self.ai_status_badge.configure(
+                    text=f"● {message}",
+                    text_color="#ffcc00"
+                )
+            elif state == "TRAINING":
+                self.ai_status_badge.configure(
+                    text="● Calibrating lightweight AI stability model…",
+                    text_color="#ffcc00"
+                )
+            elif state == "MONITORING":
+                self.ai_action_btn.configure(
+                    text="⏹ DEACTIVATE SENTINEL",
+                    fg_color="#00ff9f" if is_cyber else "#00aa00",
+                    hover_color="#00d685" if is_cyber else "#008800",
+                    text_color="#05060f" if is_cyber else "#ffffff"
+                )
+                game_fps = data.get("game_fps")
+                fps_str = f" · {game_fps:.0f} FPS" if game_fps else ""
+                if active_game:
+                    self.ai_status_badge.configure(
+                        text=f"● 🎮 Stabilizing {active_game}{fps_str} · 1.0ms Lock",
+                        text_color=theme["accent_cyan"] if is_cyber else "#00aa00"
+                    )
+                else:
+                    self.ai_status_badge.configure(
+                        text="● Sentinel Active · 1.0ms Timer Locked",
+                        text_color=theme["accent_cyan"] if is_cyber else "#00aa00"
+                    )
+                self.hud_timer_val.configure(
+                    text="● 1.0ms HIGH-RES (LOCKED)",
+                    text_color=theme["accent_green"] if is_cyber else "#00ff00"
+                )
+            elif state == "ACTING":
+                action_text = last_action or "Standby Cache Purged"
+                self.ai_status_badge.configure(
+                    text=f"● ⚡ {action_text}",
+                    text_color=theme["accent_green"] if is_cyber else "#00ff00"
+                )
+                self.hud_timer_val.configure(
+                    text="● 1.0ms HIGH-RES (LOCKED)",
+                    text_color=theme["accent_green"] if is_cyber else "#00ff00"
+                )
+                self._update_ram_label()
+            elif state == "ERROR":
+                self.ai_status_badge.configure(
+                    text=f"● Error: {message}",
+                    text_color="#ff4d4f"
+                )
         except Exception:
-            return
-
-        state = data.get("state", "IDLE")
-        message = data.get("message", "")
-        active_game = data.get("active_game")
-        last_action = data.get("last_action")
-        theme = get_theme()
-        is_cyber = is_cyber_mode()
-
-        if state == "IDLE":
-            self.ai_action_btn.configure(
-                text="▶ ACTIVATE SENTINEL",
-                fg_color=theme["accent_purple"] if is_cyber else "#262626",
-                hover_color="#9333ea" if is_cyber else "#333333",
-                text_color="#ffffff"
-            )
-            self.ai_status_badge.configure(
-                text="○ Inactive · Click to activate 1.0ms lock",
-                text_color=theme["text_secondary"]
-            )
-            self.hud_timer_val.configure(
-                text="○ 15.6ms (DEFAULT)",
-                text_color=theme["text_muted"]
-            )
-        elif state == "BOOTSTRAPPING":
-            self.ai_action_btn.configure(
-                text="⏹ DEACTIVATE SENTINEL",
-                fg_color="#00ff9f" if is_cyber else "#00aa00",
-                hover_color="#00d685" if is_cyber else "#008800",
-                text_color="#05060f" if is_cyber else "#ffffff"
-            )
-            self.ai_status_badge.configure(
-                text=f"● {message}",
-                text_color="#ffcc00"
-            )
-        elif state == "TRAINING":
-            self.ai_status_badge.configure(
-                text="● Calibrating lightweight AI stability model…",
-                text_color="#ffcc00"
-            )
-        elif state == "MONITORING":
-            self.ai_action_btn.configure(
-                text="⏹ DEACTIVATE SENTINEL",
-                fg_color="#00ff9f" if is_cyber else "#00aa00",
-                hover_color="#00d685" if is_cyber else "#008800",
-                text_color="#05060f" if is_cyber else "#ffffff"
-            )
-            if active_game:
-                self.ai_status_badge.configure(
-                    text=f"● 🎮 Stabilizing {active_game} · 1.0ms Lock",
-                    text_color=theme["accent_cyan"] if is_cyber else "#00aa00"
-                )
-            else:
-                self.ai_status_badge.configure(
-                    text="● Sentinel Active · 1.0ms Timer Locked",
-                    text_color=theme["accent_cyan"] if is_cyber else "#00aa00"
-                )
-            self.hud_timer_val.configure(
-                text="● 1.0ms HIGH-RES (LOCKED)",
-                text_color=theme["accent_green"] if is_cyber else "#00ff00"
-            )
-        elif state == "ACTING":
-            action_text = last_action or "Standby Cache Purged"
-            self.ai_status_badge.configure(
-                text=f"● ⚡ {action_text}",
-                text_color=theme["accent_green"] if is_cyber else "#00ff00"
-            )
-            self.hud_timer_val.configure(
-                text="● 1.0ms HIGH-RES (LOCKED)",
-                text_color=theme["accent_green"] if is_cyber else "#00ff00"
-            )
-            self._update_ram_label()
-        elif state == "ERROR":
-            self.ai_status_badge.configure(
-                text=f"● Error: {message}",
-                text_color="#ff4d4f"
-            )
+            pass
     def _update_ram_label(self):
         ram = get_current_available_ram_mb()
         try:
