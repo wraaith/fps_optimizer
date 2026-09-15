@@ -1,0 +1,139 @@
+{
+  "schema_version": 2,
+  "network_state": {
+    "created_at": "2026-09-14 11:52:47",
+    "dns": {
+      "Ethernet": {
+        "mode": "auto",
+        "servers": [
+          "192.168.29.1"
+        ]
+      },
+      "Local Area Connection* 1": {
+        "mode": "auto",
+        "servers": []
+      },
+      "Local Area Connection* 2": {
+        "mode": "auto",
+        "servers": []
+      },
+      "Wi-Fi": {
+        "mode": "auto",
+        "servers": [
+          "1.1.1.1",
+          "8.8.8.8"
+        ]
+      },
+      "Bluetooth Network Connection": {
+        "mode": "auto",
+        "servers": []
+      },
+      "Loopback Pseudo-Interface 1": {
+        "mode": "auto",
+        "servers": []
+      }
+    },
+    "power_plan": {
+      "guid": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+      "name": "High performance"
+    },
+    "game_settings": {
+      "GameDVR_Enabled": 0
+    },
+    "adapter_settings": {
+      "active_adapter": {
+        "interface_guid": "{26105572-8127-4190-943C-3C1CE5378459}",
+        "interface_index": 8,
+        "name": "Wi-Fi",
+        "description": "Realtek 8852CE WiFi 6E PCI-E NIC",
+        "driver_version": "6001.16.165.0"
+      }
+    }
+  },
+  "persistent_changes": [
+    {
+      "id": "test-20260914-112123-eb43",
+      "category": "test",
+      "setting": "First Setting",
+      "target": "target1",
+      "old_value": "v1",
+      "old_mode": false,
+      "new_value": "v2",
+      "status": "reverted",
+      "reboot_required": false,
+      "timestamp": "2026-09-14 11:21:23",
+      "verification_status": "verified",
+      "reason": "Setting 'First Setting' restored to v1",
+      "updated_at": "2026-09-14 11:21:23"
+    },
+    {
+      "id": "test-20260914-112123-423e",
+      "category": "test",
+      "setting": "Second Setting",
+      "target": "target2",
+      "old_value": "vA",
+      "old_mode": false,
+      "new_value": "vB",
+      "status": "reverted",
+      "reboot_required": false,
+      "timestamp": "2026-09-14 11:21:23",
+      "verification_status": "verified",
+      "reason": "Setting 'Second Setting' restored to vA",
+      "updated_at": "2026-09-14 11:21:23"
+    },
+    {
+      "id": "dns-20260914-112123-37fc",
+      "category": "dns",
+      "setting": "Invalid DNS",
+      "target": "!@#$%^&*()",
+      "old_value": [
+        "1.1.1.1"
+      ],
+      "old_mode": null,
+      "new_value": [
+        "8.8.8.8"
+      ],
+      "status": "skipped",
+      "reboot_required": false,
+      "timestamp": "2026-09-14 11:21:23",
+      "verification_status": "invalid_identifier",
+      "reason": "Invalid interface identifier format: '!@#$%^&*()'",
+      "updated_at": "2026-09-14 11:21:23"
+    },
+    {
+      "id": "network_stack-20260914-112123-b814",
+      "category": "network_stack",
+      "setting": "Winsock Reset (Recovery Action)",
+      "target": "System",
+      "old_value": "Custom",
+      "old_mode": null,
+      "new_value": "Factory Defaults",
+      "status": "skipped",
+      "reboot_required": false,
+      "timestamp": "2026-09-14 11:21:23",
+      "verification_status": "manual_intervention_required",
+      "reason": "Winsock reset is a recovery action requiring restart / manual intervention.",
+      "updated_at": "2026-09-14 11:21:23"
+    },
+    {
+      "id": "test-20260914-112123-1d48",
+      "category": "test",
+      "setting": "Setting To Audit",
+      "target": "target",
+      "old_value": "old",
+      "old_mode": null,
+      "new_value": "new",
+      "status": "reverted",
+      "reboot_required": false,
+      "timestamp": "2026-09-14 11:21:23",
+      "verification_status": "verified",
+      "reason": "Setting 'Setting To Audit' restored to old",
+      "updated_at": "2026-09-14 11:21:23"
+    }
+  ],
+  "session_interventions": [],
+  "priority_records": [],
+  "timer_state": {},
+  "snapshots": [],
+  "last_rollback": null
+}

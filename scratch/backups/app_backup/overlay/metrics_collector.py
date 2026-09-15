@@ -209,23 +209,17 @@ def _parse_float(value: Optional[str]) -> Optional[float]:
 # ── Metrics collector ────────────────────────────────────────────
 
 
-_shared_instance: Optional['MetricsCollector'] = None
-_shared_lock = threading.Lock()
-
-def get_shared_metrics_collector(target_process: Optional[str] = None) -> 'MetricsCollector':
-    """Get or create the singleton SharedMetricsProvider."""
-    global _shared_instance
-    with _shared_lock:
-        if _shared_instance is None:
-            _shared_instance = MetricsCollector(target_process=target_process)
-        elif target_process and not _shared_instance._target_process:
-            _shared_instance._target_process = target_process.strip().lower()
-        return _shared_instance
-
 class MetricsCollector:
     """
     Collect hardware and performance metrics in background threads.
-    Now acts as a SharedMetricsProvider using reference counting.
+
+    Access the latest values with:
+
+        collector.snapshot
+
+    or:
+
+        collector.get_metrics()
     """
 
     def __init__(
@@ -247,18 +241,15 @@ class MetricsCollector:
             "fps": None,
             "cpu_power_w": None,
             "gpu_power_w": None,
-            "timestamp": 0.0,
         }
 
         self._gpu: Optional[GPUBackend] = None
 
         self._running = False
-        self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
         self._pm_process: Optional[subprocess.Popen] = None
         self._pm_thread: Optional[threading.Thread] = None
-        self._pm_stop_event = threading.Event()
 
         self._current_fps: Optional[float] = None
         self._last_fps_time: float = 0.0
@@ -267,9 +258,14 @@ class MetricsCollector:
         self._frametimes = collections.deque()
 
         self._presentmon_started = False
-        
-        self._consumers = 0
 
+        # Optional process filter.
+        #
+        # Example:
+        #   MetricsCollector(target_process="Cyberpunk2077.exe")
+        #
+        # It can also be set through:
+        #   FPS_OVERLAY_TARGET_PROCESS=Cyberpunk2077.exe
         self._target_process = (
             target_process
             or os.getenv("FPS_OVERLAY_TARGET_PROCESS")
@@ -278,54 +274,42 @@ class MetricsCollector:
 
         atexit.register(self.stop)
 
+    # ── Public API ───────────────────────────────────────────────
+
     @property
     def snapshot(self) -> Dict[str, Any]:
+        """Return a thread-safe copy of the latest metrics."""
+
         with self._lock:
             return dict(self._snapshot)
 
     def get_metrics(self) -> Dict[str, Any]:
+        """Compatibility alias for ``snapshot``."""
+
         return self.snapshot
 
-    def retain(self):
-        """Add a consumer and start the collector if needed."""
-        with self._lock:
-            self._consumers += 1
-            if self._consumers == 1:
-                self._start_internal()
-                
-    def release(self):
-        """Remove a consumer and stop the collector if empty."""
-        with self._lock:
-            if self._consumers > 0:
-                self._consumers -= 1
-            if self._consumers == 0:
-                self._stop_internal()
-
     def start(self) -> None:
-        """Legacy start() - acts as a retain."""
-        self.retain()
+        """Start hardware and PresentMon collection."""
 
-    def stop(self) -> None:
-        """Legacy stop() - forces stop regardless of consumers (e.g. at exit)."""
         with self._lock:
-            self._consumers = 0
-            self._stop_internal()
+            if self._running:
+                return
 
-    def _start_internal(self) -> None:
-        if self._running:
-            return
+            self._running = True
 
-        self._running = True
-        self._stop_event.clear()
-        self._pm_stop_event.clear()
-
+        # Initialize the GPU backend once.
         try:
             self._gpu = create_gpu_backend()
+
             gpu_name = self._gpu.get_name()
-            self._snapshot["gpu_name"] = gpu_name
+
+            with self._lock:
+                self._snapshot["gpu_name"] = gpu_name
+
         except Exception:
             self._gpu = None
 
+        # Prime psutil's non-blocking CPU usage measurement.
         try:
             psutil.cpu_percent(interval=None)
         except Exception:
@@ -337,13 +321,15 @@ class MetricsCollector:
             daemon=True,
         )
         self._thread.start()
+
         self._start_presentmon()
 
-    def _stop_internal(self) -> None:
-        was_running = self._running
-        self._running = False
-        self._stop_event.set()
-        self._pm_stop_event.set()
+    def stop(self) -> None:
+        """Stop all collection workers and release resources."""
+
+        with self._lock:
+            was_running = self._running
+            self._running = False
 
         if not was_running and self._pm_process is None:
             return
@@ -362,14 +348,24 @@ class MetricsCollector:
             and self._thread is not threading.current_thread()
         ):
             self._thread.join(timeout=2.0)
+
         self._thread = None
 
+    # ── PresentMon process ──────────────────────────────────────
+
     def _start_presentmon(self) -> None:
+        """Start PresentMon and begin reading its CSV output."""
+
         if self._presentmon_started:
             return
 
         presentmon_path = get_presentmon_path()
+
         if not os.path.isfile(presentmon_path):
+            print(
+                f"[Metrics] PresentMon not found at: "
+                f"{presentmon_path}"
+            )
             return
 
         try:
@@ -387,20 +383,30 @@ class MetricsCollector:
                 text=True,
                 universal_newlines=True,
                 bufsize=1,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                creationflags=getattr(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0,
+                ),
             )
+
             self._presentmon_started = True
+
             self._pm_thread = threading.Thread(
                 target=self._read_presentmon_output,
                 name="PresentMonReader",
                 daemon=True,
             )
             self._pm_thread.start()
-        except Exception:
+
+        except Exception as error:
             self._pm_process = None
             self._presentmon_started = False
+            print(f"[Metrics] Failed to start PresentMon: {error}")
 
     def _stop_presentmon(self) -> None:
+        """Stop PresentMon without killing unrelated instances."""
+
         process = self._pm_process
         self._pm_process = None
         self._presentmon_started = False
@@ -420,80 +426,169 @@ class MetricsCollector:
                 pass
 
         reader = self._pm_thread
+
         if (
             reader is not None
             and reader.is_alive()
             and reader is not threading.current_thread()
         ):
             reader.join(timeout=2.0)
+
         self._pm_thread = None
 
+    # Process names that are never interesting for FPS metrics.
     _IGNORED_APPS = frozenset({
-        "dwm.exe", "explorer.exe", "unknown", "desktop window manager",
-        "python.exe", "pythonw.exe", "fps_optimizer.exe", "chrome.exe",
-        "msedge.exe", "firefox.exe", "brave.exe", "discord.exe",
-        "spotify.exe", "code.exe", "devenv.exe", "cmd.exe",
-        "powershell.exe", "pwsh.exe", "taskmgr.exe", "shellexperiencehost.exe",
-        "searchhost.exe", "startmenuexperiencehost.exe", "applicationframehost.exe",
-        "lockapp.exe", "notepad.exe", "calculator.exe", "slack.exe",
-        "teams.exe", "steamwebhelper.exe",
+        "dwm.exe",
+        "explorer.exe",
+        "unknown",
+        "desktop window manager",
+        "python.exe",
+        "pythonw.exe",
+        "fps_optimizer.exe",
+        "chrome.exe",
+        "msedge.exe",
+        "firefox.exe",
+        "brave.exe",
+        "discord.exe",
+        "spotify.exe",
+        "code.exe",
+        "devenv.exe",
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "taskmgr.exe",
+        "shellexperiencehost.exe",
+        "searchhost.exe",
+        "startmenuexperiencehost.exe",
+        "applicationframehost.exe",
+        "lockapp.exe",
+        "notepad.exe",
+        "calculator.exe",
+        "slack.exe",
+        "teams.exe",
+        "steamwebhelper.exe",
     })
 
     def _is_target_application(self, application: str) -> bool:
+        """Return whether a PresentMon row belongs to the target app."""
+
         application = application.strip().lower()
-        if not application or application in self._IGNORED_APPS:
+
+        if not application:
             return False
+
+        if application in self._IGNORED_APPS:
+            return False
+
         if not self._target_process:
             return True
+
         return (
             application == self._target_process
-            or os.path.basename(application) == self._target_process
+            or os.path.basename(application)
+            == self._target_process
         )
 
     def _read_presentmon_output(self) -> None:
+        """Read and parse PresentMon CSV output continuously."""
+
         process = self._pm_process
+
         if process is None or process.stdout is None:
             return
 
         try:
             csv_reader = csv.reader(
-                line for line in process.stdout
-                if line.strip() and not line.lstrip().startswith("//")
+                line
+                for line in process.stdout
+                if line.strip()
+                and not line.lstrip().startswith("//")
             )
+
             headers = None
 
             for fields in csv_reader:
-                if self._pm_stop_event.is_set():
+                if not self._running:
                     break
 
                 if not fields:
                     continue
 
-                cleaned_fields = [field.strip() for field in fields]
+                cleaned_fields = [
+                    field.strip()
+                    for field in fields
+                ]
 
+                # Ignore metadata or informational lines until the
+                # actual CSV header appears.
                 if headers is None:
-                    normalized_headers = {_normalise_header(f) for f in cleaned_fields}
-                    if "application" in normalized_headers and any(c in normalized_headers for c in ("msbetweenpresents", "msbetweenpresent", "presentstart")):
+                    normalized_headers = {
+                        _normalise_header(field)
+                        for field in cleaned_fields
+                    }
+
+                    has_application = (
+                        "application" in normalized_headers
+                    )
+
+                    has_timing_column = any(
+                        column in normalized_headers
+                        for column in (
+                            "msbetweenpresents",
+                            "msbetweenpresent",
+                            "presentstart",
+                        )
+                    )
+
+                    if has_application and has_timing_column:
                         headers = cleaned_fields
+
                     continue
 
                 if len(cleaned_fields) < len(headers):
                     continue
 
-                row = dict(zip(headers, cleaned_fields))
-                norm_row = {_normalise_header(k): v.strip() for k, v in row.items() if k is not None}
-                application = _find_column(norm_row, "Application", "ApplicationName", "ProcessName")
+                row = dict(
+                    zip(headers, cleaned_fields)
+                )
 
-                if not self._is_target_application(application or ""):
+                # Normalise keys ONCE per row instead of per-column lookup.
+                norm_row = {
+                    _normalise_header(k): v.strip()
+                    for k, v in row.items()
+                    if k is not None
+                }
+
+                application = _find_column(
+                    norm_row,
+                    "Application",
+                    "ApplicationName",
+                    "ProcessName",
+                )
+
+                if not self._is_target_application(
+                    application or ""
+                ):
                     continue
 
-                ms_between = _find_column(norm_row, "MsBetweenPresents", "MsBetweenPresent")
+                # ── FPS ─────────────────────────────────────
+
+                ms_between = _find_column(
+                    norm_row,
+                    "MsBetweenPresents",
+                    "MsBetweenPresent",
+                )
+
                 milliseconds = _parse_float(ms_between)
 
-                if milliseconds is not None and 0.5 <= milliseconds <= 1000.0:
+                if (
+                    milliseconds is not None
+                    and 0.5 <= milliseconds <= 1000.0
+                ):
                     now = time.time()
                     with self._lock:
                         self._frametimes.append((now, milliseconds))
+                        # Keep a sliding 0.75-second window for true rolling FPS
                         while self._frametimes and (now - self._frametimes[0][0] > 0.75):
                             self._frametimes.popleft()
 
@@ -519,81 +614,133 @@ class MetricsCollector:
                     except Exception:
                         pass
 
-                cpu_power = _find_column(norm_row, "CpuPowerW", "CPU Power (W)", "CpuPower", "CPU Power")
+                # ── CPU power ───────────────────────────────
+
+                cpu_power = _find_column(
+                    norm_row,
+                    "CpuPowerW",
+                    "CPU Power (W)",
+                    "CpuPower",
+                    "CPU Power",
+                )
+
                 parsed_cpu_power = _parse_float(cpu_power)
+
                 if parsed_cpu_power is not None:
                     with self._lock:
-                        self._current_cpu_w = round(parsed_cpu_power, 1)
+                        self._current_cpu_w = round(
+                            parsed_cpu_power,
+                            1,
+                        )
 
-                gpu_power = _find_column(norm_row, "GpuPowerW", "GPU Power (W)", "GpuPower", "GPU Power")
+                # ── GPU power ───────────────────────────────
+
+                gpu_power = _find_column(
+                    norm_row,
+                    "GpuPowerW",
+                    "GPU Power (W)",
+                    "GpuPower",
+                    "GPU Power",
+                )
+
                 parsed_gpu_power = _parse_float(gpu_power)
+
                 if parsed_gpu_power is not None:
                     with self._lock:
-                        self._current_gpu_w = round(parsed_gpu_power, 1)
+                        self._current_gpu_w = round(
+                            parsed_gpu_power,
+                            1,
+                        )
 
         except Exception as error:
-            pass
+            if self._running:
+                print(
+                    f"[Metrics] PresentMon read error: {error}"
+                )
+
+    # ── Hardware polling loop ──────────────────────────────────
 
     def _loop(self) -> None:
-        try:
-            while not self._stop_event.is_set():
-                data: Dict[str, Any] = {}
+        """Poll hardware metrics until stopped."""
 
+        while True:
+            with self._lock:
+                if not self._running:
+                    break
+
+            data: Dict[str, Any] = {}
+
+            # CPU usage
+            try:
+                data["cpu_usage"] = psutil.cpu_percent(
+                    interval=None
+                )
+            except Exception:
+                data["cpu_usage"] = None
+
+            # CPU temperature
+            try:
+                data["cpu_temp"] = get_cpu_temp()
+            except Exception:
+                data["cpu_temp"] = None
+
+            # GPU metrics
+            if self._gpu is not None:
                 try:
-                    data["cpu_usage"] = psutil.cpu_percent(interval=None)
+                    data["gpu_name"] = self._gpu.get_name()
                 except Exception:
-                    data["cpu_usage"] = None
-
-                try:
-                    data["cpu_temp"] = get_cpu_temp()
-                except Exception:
-                    data["cpu_temp"] = None
-
-                if self._gpu is not None:
-                    try:
-                        data["gpu_name"] = self._gpu.get_name()
-                    except Exception:
-                        data["gpu_name"] = None
-
-                    try:
-                        data["gpu_temp"] = self._gpu.get_temperature()
-                    except Exception:
-                        data["gpu_temp"] = None
-
-                    try:
-                        data["gpu_usage"] = self._gpu.get_usage_percent()
-                    except Exception:
-                        data["gpu_usage"] = None
-                else:
                     data["gpu_name"] = None
+
+                try:
+                    data["gpu_temp"] = (
+                        self._gpu.get_temperature()
+                    )
+                except Exception:
                     data["gpu_temp"] = None
+
+                try:
+                    data["gpu_usage"] = (
+                        self._gpu.get_usage_percent()
+                    )
+                except Exception:
                     data["gpu_usage"] = None
 
-                try:
-                    data["ram_usage"] = psutil.virtual_memory().percent
-                except Exception:
-                    data["ram_usage"] = None
+            else:
+                data["gpu_name"] = None
+                data["gpu_temp"] = None
+                data["gpu_usage"] = None
 
-                try:
-                    from services.benchmark_logger import read_live_fps
-                    ipc_data = read_live_fps()
-                    if ipc_data and (time.time() - ipc_data.get("timestamp", 0) < 2.5):
-                        with self._lock:
-                            self._current_fps = ipc_data.get("fps")
-                            self._last_fps_time = time.time()
-                except Exception:
-                    pass
+            # RAM usage
+            try:
+                data["ram_usage"] = (
+                    psutil.virtual_memory().percent
+                )
+            except Exception:
+                data["ram_usage"] = None
 
-                with self._lock:
-                    if self._last_fps_time and (time.time() - self._last_fps_time > 2.5):
-                        self._current_fps = None
-                    data["fps"] = self._current_fps
-                    data["cpu_power_w"] = self._current_cpu_w
-                    data["gpu_power_w"] = self._current_gpu_w
-                    data["timestamp"] = time.time()
-                    self._snapshot.update(data)
-                
-                if self._stop_event.wait(self._interval):
-                    break
-        finally:
-            pass
+            # PresentMon / Live Sentinel IPC values
+            try:
+                from services.benchmark_logger import read_live_fps
+                ipc_data = read_live_fps()
+                if ipc_data and (time.time() - ipc_data.get("timestamp", 0) < 2.5):
+                    with self._lock:
+                        self._current_fps = ipc_data.get("fps")
+                        self._last_fps_time = time.time()
+            except Exception:
+                pass
+
+            with self._lock:
+                if self._last_fps_time and (time.time() - self._last_fps_time > 2.5):
+                    self._current_fps = None
+                data["fps"] = self._current_fps
+                data["cpu_power_w"] = self._current_cpu_w
+                data["gpu_power_w"] = self._current_gpu_w
+
+                self._snapshot.update(data)
+
+                running = self._running
+
+            if not running:
+                break
+
+            time.sleep(self._interval)

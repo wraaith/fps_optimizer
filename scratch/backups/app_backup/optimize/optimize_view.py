@@ -979,17 +979,6 @@ class OptimizeView(ctk.CTkFrame):
     def _init_sysmain_status(self):
         """Asynchronously inspect SysMain and drive type to populate Card 4 status chip."""
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             try:
                 sm_status = get_sysmain_status()
                 has_ssd = check_has_ssd()
@@ -1038,40 +1027,11 @@ class OptimizeView(ctk.CTkFrame):
     # ── AI Game Sentinel Handlers ─────────────────────────────
 
     def _toggle_ai_sentinel_btn(self):
-        """Start or stop the AI Game Sentinel watchdog via action button.
-        Always routes through SentinelService to ensure unified singleton lifecycle
-        and consistent state machine transitions.
-        """
+        """Start or stop the AI Game Sentinel watchdog via action button."""
         theme = get_theme()
         is_cyber = is_cyber_mode()
 
-        from sentinel.service import SentinelService
-        from sentinel.models import SentinelState
-        sentinel_svc = SentinelService.get_instance()
-        curr_state = sentinel_svc.get_state()
-
-        # If running, or in any state other than IDLE (such as INTERVENTION_ACTIVE, VERIFYING, COOLDOWN, SAFE_MODE, MONITORING):
-        if sentinel_svc.is_running() or curr_state != SentinelState.IDLE or self.ai_service.is_running:
-            sentinel_svc.stop()
-            self.ai_action_btn.configure(
-                text="▶ ACTIVATE SENTINEL",
-                fg_color=theme["accent_purple"] if is_cyber else "#262626",
-                hover_color="#9333ea" if is_cyber else "#333333",
-                text_color="#ffffff"
-            )
-            self.ai_status_badge.configure(
-                text="○ Inactive · Click to activate 1.0ms lock",
-                text_color=theme["text_secondary"]
-            )
-            self.basic_status_label.configure(
-                text="AI Sentinel stopped. Timer resolution restored to OS default.",
-                text_color=theme["text_secondary"]
-            )
-            self.hud_timer_val.configure(
-                text="○ 15.6ms (DEFAULT)",
-                text_color=theme["text_muted"]
-            )
-        else:
+        if not self.ai_service.is_running:
             self.ai_action_btn.configure(
                 text="⏹ DEACTIVATE SENTINEL",
                 fg_color="#00ff9f" if is_cyber else "#00aa00",
@@ -1090,7 +1050,27 @@ class OptimizeView(ctk.CTkFrame):
                 text="● 1.0ms HIGH-RES (LOCKED)",
                 text_color=theme["accent_green"] if is_cyber else "#00ff00"
             )
-            sentinel_svc.start()
+            self.ai_service.start()
+        else:
+            self.ai_service.stop()
+            self.ai_action_btn.configure(
+                text="▶ ACTIVATE SENTINEL",
+                fg_color=theme["accent_purple"] if is_cyber else "#262626",
+                hover_color="#9333ea" if is_cyber else "#333333",
+                text_color="#ffffff"
+            )
+            self.ai_status_badge.configure(
+                text="○ Inactive · Click to activate 1.0ms lock",
+                text_color=theme["text_secondary"]
+            )
+            self.basic_status_label.configure(
+                text="AI Sentinel stopped. Timer resolution restored to OS default.",
+                text_color=theme["text_secondary"]
+            )
+            self.hud_timer_val.configure(
+                text="○ 15.6ms (DEFAULT)",
+                text_color=theme["text_muted"]
+            )
 
     # ── In-Window Sentinel Diagnostics View ────────────────────
 
@@ -1206,17 +1186,6 @@ class OptimizeView(ctk.CTkFrame):
             child.destroy()
 
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             report = self.ai_service.run_diagnostics()
             try:
                 self.after(0, lambda: self._diag_render(report))
@@ -1641,17 +1610,6 @@ class OptimizeView(ctk.CTkFrame):
         loading_lbl.grid(row=0, column=0, pady=30)
 
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             procs = get_top_memory_consumers(30)
             try:
                 self.after(0, self._pk_render_procs, procs)
@@ -1785,29 +1743,12 @@ class OptimizeView(ctk.CTkFrame):
         ram_before = self._update_ram_label()
 
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             fg_game = get_foreground_game_process()
             exclude_pids = [fg_game["pid"]] if fg_game else []
-            # Step 1 & 2: Route through Sentinel Service
-            try:
-                from sentinel.service import SentinelService
-                SentinelService.get_instance().request_intervention("clear_standby_memory")
-                SentinelService.get_instance().request_intervention("trim_all_working_sets", {"exclude_pids": exclude_pids})
-                standby_result = {"success": True, "freed_mb": 0}
-                trim_result = {"trimmed": 0}
-            except ImportError:
-                standby_result = {"success": False, "error": "Sentinel Service not found"}
-                trim_result = {"trimmed": 0}
+            # Step 1: Clear standby memory (the big win)
+            standby_result = clear_standby_memory()
+            # Step 2: Trim working sets (protecting active game)
+            trim_result = trim_all_working_sets(exclude_pids=exclude_pids)
             # Small delay for OS to settle
             time.sleep(0.5)
             try:
@@ -1869,17 +1810,6 @@ class OptimizeView(ctk.CTkFrame):
         )
 
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             result = stabilize_network()
             try:
                 if self.winfo_exists():
@@ -2129,17 +2059,6 @@ class OptimizeView(ctk.CTkFrame):
         self.net_result_lbl.configure(text="")
 
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             res = action_fn()
             try:
                 self.after(0, _done, res)
@@ -2168,17 +2087,6 @@ class OptimizeView(ctk.CTkFrame):
     def _net_probe_status(self, sync: bool = False):
         """Probe live network adapter, latency, and DNS status."""
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             info = get_network_status()
             try:
                 self.after(0, self._net_render_status, info)
@@ -2341,17 +2249,6 @@ class OptimizeView(ctk.CTkFrame):
     def _sm_check_status(self, sync: bool = False):
         """Check SysMain service status and drive type."""
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             sm_status = get_sysmain_status()
             has_ssd = check_has_ssd()
             try:
@@ -2423,17 +2320,6 @@ class OptimizeView(ctk.CTkFrame):
         self.sm_result_lbl.configure(text="")
 
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             res = set_sysmain_enabled(enable)
             time.sleep(0.5)
             try:

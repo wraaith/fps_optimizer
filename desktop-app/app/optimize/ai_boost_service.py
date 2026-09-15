@@ -56,25 +56,24 @@ COOLDOWN_SEC = 45.0              # Post-action rest — less thrash on weak syst
 
 class GameFpsTracker:
     """Dedicated FPS tracker for the active game process.
-
-    Runs PresentMon targeting the specific game process ID, computes a
-    rock-solid rolling-window FPS and 1% low frame pacing, feeds samples
-    directly to BenchmarkHistoryService, and synchronizes with the overlay
-    via shared IPC.
+    Migrated in Phase 2 to use ManagedWorker and SharedMetricsProvider.
     """
 
     def __init__(self, pid: int, game_name: str, callback: Optional[Callable[[float, Optional[float]], None]] = None):
         self.pid = pid
         self.game_name = game_name
         self.callback = callback
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._pm_proc: Optional[subprocess.Popen] = None
         self._current_fps: Optional[float] = None
         self._current_1pct_low: Optional[float] = None
         self._lock = threading.Lock()
-        self._frametimes = collections.deque()  # stores (timestamp, milliseconds)
-        self._last_sample_time = 0.0
+        
+        from sentinel.worker import ManagedWorker
+        self._worker = ManagedWorker(
+            name=f"GameFpsTracker_{self.pid}",
+            interval=1.0,
+            work_fn=self._work_fn,
+            cleanup_fn=self._cleanup
+        )
 
     @property
     def current_fps(self) -> Optional[float]:
@@ -87,31 +86,20 @@ class GameFpsTracker:
             return self._current_1pct_low
 
     def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._run, daemon=True, name=f"GameFpsTracker_{self.pid}")
-        self._thread.start()
+        from overlay.metrics_collector import get_shared_metrics_collector
+        # Ensure the shared collector targets our game
+        self._collector = get_shared_metrics_collector(target_process=self.game_name)
+        self._collector.retain()
+        self._worker.start()
 
     def stop(self):
-        self._running = False
-        if self._pm_proc is not None:
-            try:
-                if self._pm_proc.poll() is None:
-                    self._pm_proc.terminate()
-                    self._pm_proc.wait(timeout=1.0)
-            except Exception:
-                try:
-                    self._pm_proc.kill()
-                except Exception:
-                    pass
-            self._pm_proc = None
+        self._worker.stop()
 
-        if self._thread and self._thread.is_alive() and self._thread != threading.current_thread():
-            self._thread.join(timeout=1.5)
-            self._thread = None
+    def _cleanup(self):
+        if hasattr(self, '_collector') and self._collector:
+            self._collector.release()
 
-    def _run(self):
+    def _work_fn(self):
         try:
             import ctypes
             ctypes.windll.kernel32.SetThreadPriority(
@@ -121,212 +109,48 @@ class GameFpsTracker:
         except Exception:
             pass
 
-        presentmon_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "bin",
-            "PresentMon-2.5.1-x64.exe"
-        )
-
-        started_pm = False
-        if os.path.isfile(presentmon_path):
+        metrics = self._collector.snapshot
+        fps = metrics.get("fps")
+        
+        if fps and 5.0 <= fps <= 1000.0:
+            low_1pct = round(fps * 0.85, 1)
+            with self._lock:
+                self._current_fps = fps
+                self._current_1pct_low = low_1pct
+                
             try:
-                self._pm_proc = subprocess.Popen(
-                    [
-                        presentmon_path,
-                        "--process_id", str(self.pid),
-                        "--output_stdout",
-                        "--no_console_stats",
-                        "--stop_existing_session",
-                        "--v1_metrics",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    universal_newlines=True,
-                    bufsize=1,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                started_pm = True
-            except Exception as e:
-                log.warning(f"PresentMon launch error: {e}")
-                self._pm_proc = None
-
-        if started_pm and self._pm_proc and self._pm_proc.stdout:
-            self._read_presentmon_stream()
-        else:
-            self._run_fallback_loop()
-
-    def _read_presentmon_stream(self):
-        from services.benchmark_logger import get_history_service, write_live_fps
-        hs = get_history_service()
-        headers = None
-
-        try:
-            csv_reader = csv.reader(
-                line for line in self._pm_proc.stdout
-                if line.strip() and not line.lstrip().startswith("//")
-            )
-
-            for fields in csv_reader:
-                if not self._running:
-                    break
-                if not fields:
-                    continue
-
-                cleaned = [f.strip() for f in fields]
-                if headers is None:
-                    norm = [f.strip().lower().replace(" ", "").replace("_", "") for f in cleaned]
-                    if any("msbetweenpresent" in col for col in norm):
-                        headers = norm
-                    continue
-
-                if len(cleaned) < len(headers):
-                    continue
-
-                ms_val = None
-                for idx, col in enumerate(headers):
-                    if "msbetweenpresent" in col:
-                        try:
-                            val_str = cleaned[idx].replace(",", "").replace(" ms", "").strip()
-                            ms_val = float(val_str)
-                            break
-                        except (ValueError, TypeError):
-                            pass
-
-                if ms_val is not None and 0.5 <= ms_val <= 1000.0:
-                    now = time.time()
-                    with self._lock:
-                        self._frametimes.append((now, ms_val))
-                        while self._frametimes and (now - self._frametimes[0][0] > 0.75):
-                            self._frametimes.popleft()
-
-                        if self._frametimes:
-                            total_ms = sum(ft[1] for ft in self._frametimes)
-                            if total_ms > 0:
-                                current_fps = round((len(self._frametimes) * 1000.0) / total_ms, 1)
-                                self._current_fps = current_fps
-
-                                sorted_ms = sorted(ft[1] for ft in self._frametimes)
-                                idx_99 = min(len(sorted_ms) - 1, int(len(sorted_ms) * 0.99))
-                                p99_ms = sorted_ms[idx_99]
-                                if p99_ms > 0:
-                                    self._current_1pct_low = round(1000.0 / p99_ms, 1)
-
-                    if now - self._last_sample_time >= 1.0:
-                        self._last_sample_time = now
-                        if self._current_fps:
-                            hs.record_fps_sample(self._current_fps)
-                            write_live_fps({
-                                "fps": self._current_fps,
-                                "low_1pct": self._current_1pct_low,
-                                "game": self.game_name,
-                                "pid": self.pid,
-                                "timestamp": now,
-                            })
-                            if self.callback:
-                                self.callback(self._current_fps, self._current_1pct_low)
-
-        except Exception as e:
-            log.warning(f"PresentMon stream terminated: {e}")
-
-        if self._running:
-            self._run_fallback_loop()
-
-    def _run_fallback_loop(self):
-        """Fallback when PresentMon is unavailable (e.g. non-admin or ETW restricted)."""
-        from services.benchmark_logger import get_history_service, read_live_fps, write_live_fps
-        hs = get_history_service()
-        dwmapi = None
-        dwm_info = None
-
-        try:
-            import ctypes
-            class _DWM_TIMING_INFO(ctypes.Structure):
-                _pack_ = 1
-                _fields_ = [
-                    ("cbSize", ctypes.c_uint32),
-                    ("rateRefreshNumerator", ctypes.c_uint32),
-                    ("rateRefreshDenominator", ctypes.c_uint32),
-                    ("qpcRefreshPeriod", ctypes.c_uint64),
-                    ("rateComposeNumerator", ctypes.c_uint32),
-                    ("rateComposeDenominator", ctypes.c_uint32),
-                    ("qpcVBlank", ctypes.c_uint64),
-                    ("cRefresh", ctypes.c_uint64),
-                    ("cDXRefresh", ctypes.c_uint32),
-                    ("qpcCompose", ctypes.c_uint64),
-                    ("cFrame", ctypes.c_uint64),
-                    ("cDXPresent", ctypes.c_uint32),
-                    ("cRefreshFrame", ctypes.c_uint64),
-                    ("_padding", ctypes.c_byte * 200),
-                ]
-            dwmapi = ctypes.windll.dwmapi
-            dwm_info = _DWM_TIMING_INFO()
-            dwm_info.cbSize = 292
-        except Exception:
-            dwmapi = None
-
-        prev_presents = 0
-        prev_time = time.perf_counter()
-        if dwmapi and dwmapi.DwmGetCompositionTimingInfo(None, ctypes.byref(dwm_info)) == 0:
-            prev_presents = dwm_info.cDXPresent
-
-        while self._running:
-            time.sleep(1.0)
-            if not self._running:
-                break
-
-            now_perf = time.perf_counter()
-            now_epoch = time.time()
-            dt = max(0.1, now_perf - prev_time)
-            fps = None
-            low_1pct = None
-
-            # First, check if the overlay is writing live_fps.json
-            shared = read_live_fps()
-            if shared and (now_epoch - shared.get("timestamp", 0) < 2.0):
-                fps = shared.get("fps")
-                low_1pct = shared.get("low_1pct")
-            elif dwmapi and dwm_info:
-                if dwmapi.DwmGetCompositionTimingInfo(None, ctypes.byref(dwm_info)) == 0:
-                    curr_presents = dwm_info.cDXPresent
-                    delta = curr_presents - prev_presents
-                    if delta < 0:
-                        # 32-bit unsigned counter wraparound
-                        delta += (1 << 32)
-                    prev_presents = curr_presents
-                    # Sanity check: between 1 and 1000 presents per second (reject DWM reset spikes)
-                    if 0 < delta <= 1000:
-                        fps = round(delta / dt, 1)
-                        low_1pct = round(fps * 0.85, 1)
-
-            prev_time = now_perf
-
-            if fps and 5.0 <= fps <= 500.0:
-                with self._lock:
-                    self._current_fps = fps
-                    self._current_1pct_low = low_1pct or round(fps * 0.85, 1)
-
+                from services.benchmark_logger import get_history_service, write_live_fps
+                hs = get_history_service()
                 hs.record_fps_sample(fps)
                 write_live_fps({
-                    "fps": self._current_fps,
-                    "low_1pct": self._current_1pct_low,
+                    "fps": fps,
+                    "low_1pct": low_1pct,
                     "game": self.game_name,
                     "pid": self.pid,
-                    "timestamp": now_epoch,
+                    "timestamp": time.time(),
                 })
-                if self.callback:
-                    self.callback(self._current_fps, self._current_1pct_low)
+            except Exception:
+                pass
+                
+            if self.callback:
+                self.callback(fps, low_1pct)
+
 
 
 class AIBoostService:
     """Background watchdog daemon designed for zero gaming overhead
-    and maximum frame pacing stability."""
+    and maximum frame pacing stability. Migrated to use ManagedWorker."""
 
     def __init__(self):
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+        from sentinel.worker import ManagedWorker
+        self._worker = ManagedWorker(
+            name="AIGameSentinel",
+            interval=SAMPLE_INTERVAL_SEC,
+            work_fn=self._work_fn,
+            cleanup_fn=self._cleanup
+        )
         self._callback: Optional[Callable[[Dict[str, Any]], None]] = None
+
         self._state = "IDLE"
         self._last_action = None
         self._last_action_time = 0
@@ -346,7 +170,14 @@ class AIBoostService:
 
     @property
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return self._worker.status in ("RUNNING", "PAUSED")
+        
+    def pause(self):
+        self._worker.pause()
+        
+    def resume(self):
+        self._worker.resume()
+
 
     def set_callback(self, fn: Optional[Callable[[Dict[str, Any]], None]]):
         """Register a UI callback that receives state updates."""
@@ -378,10 +209,10 @@ class AIBoostService:
         checks = []
 
         # 1. Thread Liveness
-        thread_alive = self._thread is not None and self._thread.is_alive()
+        thread_alive = self.is_running
         checks.append({
             "id": "thread",
-            "label": "Watchdog Thread",
+            "label": "Background Worker Liveness",
             "status": "PASS" if thread_alive else ("FAIL" if self._state not in ("IDLE",) else "WARN"),
             "detail": f"Thread alive: {thread_alive} | State: {self._state}",
         })
@@ -539,7 +370,7 @@ class AIBoostService:
         """Start the Sentinel: locks 1.0ms timer, activates power plan, and launches worker."""
         if self.is_running:
             return
-        self._stop_event.clear()
+        
         self._actions_taken = 0
         self._last_action = None
         self._active_game_pid = None
@@ -548,32 +379,37 @@ class AIBoostService:
         # Lock 1.0ms Windows high-resolution multimedia timer
         self._timer_locked = enable_high_resolution_timer(1)
 
-        # Switch to High/Ultimate Performance power plan (prevents CPU/GPU throttle)
+        # Switch to High/Ultimate Performance power plan
         try:
             activate_high_performance_power()
             log.info("Activated High Performance power plan")
         except Exception as e:
             log.warning(f"Power plan switch failed: {e}")
 
-        # Disable Xbox Game Bar DVR (major stutter source)
+        # Disable Xbox Game Bar DVR
         try:
             disable_game_bar_notifications()
         except Exception:
             pass
 
-        # Disable Nagle's algorithm and network throttling for lower network latency
+        # Disable Nagle's algorithm and network throttling
         try:
             disable_nagle_algorithm()
             disable_network_throttling()
         except Exception:
             pass
+            
+        from overlay.metrics_collector import get_shared_metrics_collector
+        self._collector = get_shared_metrics_collector()
+        self._collector.retain()
 
-        self._thread = threading.Thread(target=self._run, daemon=True, name="AIGameSentinel")
-        self._thread.start()
+        self._worker.start()
 
     def stop(self):
         """Gracefully stop the watchdog, release timer, and restore power scheme."""
-        self._stop_event.set()
+        self._worker.stop()
+        
+    def _cleanup(self):
         self._set_state("IDLE", "AI Game Sentinel stopped.")
 
         if self._fps_tracker is not None:
@@ -584,6 +420,9 @@ class AIBoostService:
             self._fps_tracker = None
         self._last_game_fps = None
         self._last_game_1pct = None
+        
+        if hasattr(self, '_collector') and self._collector:
+            self._collector.release()
 
         try:
             from services.benchmark_logger import get_history_service, clear_live_fps
@@ -592,10 +431,6 @@ class AIBoostService:
             clear_live_fps()
         except Exception:
             pass
-
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(timeout=2.0)
-            self._thread = None
 
         if self._timer_locked:
             disable_high_resolution_timer(1)
@@ -606,6 +441,7 @@ class AIBoostService:
             restore_power_scheme()
         except Exception:
             pass
+
 
     # ── Internal ─────────────────────────────────────────────────
 
@@ -638,176 +474,145 @@ class AIBoostService:
         except Exception:
             pass
 
-    def _run(self):
+    def _work_fn(self):
         """Main thread entry: lowest priority, baseline, and smart monitoring loop."""
-        self._apply_lowest_thread_priority()
+        if self._state == "IDLE":
+            self._apply_lowest_thread_priority()
 
-        try:
-            from ai_perf_booster.monitor import sample_system_metrics
-            from ai_perf_booster.ai_engine import PerformanceAI, decide_actions
-        except ImportError as e:
-            self._set_state("ERROR", f"Missing AI dependencies: {e}")
-            return
+            try:
+                from ai_perf_booster.ai_engine import PerformanceAI
+            except ImportError as e:
+                self._set_state("ERROR", f"Missing AI dependencies: {e}")
+                return
 
-        ai = PerformanceAI(contamination=0.05)
-
-        try:
-            # ── Phase 1: Bootstrap ──
+            self.ai = PerformanceAI(contamination=0.05)
+            self._bootstrap_rows = []
+            self._bootstrap_count = 0
             self._set_state("BOOTSTRAPPING", f"Learning system baseline (0/{BOOTSTRAP_SAMPLES})…")
-            rows = []
-            prev_disk = prev_net = None
-
-            for i in range(BOOTSTRAP_SAMPLES):
-                if self._stop_event.is_set():
-                    return
+            self._worker.interval = 3.0
+            return
+            
+        if self._state == "BOOTSTRAPPING":
+            if self._bootstrap_count < BOOTSTRAP_SAMPLES:
                 try:
-                    row, prev_disk, prev_net = sample_system_metrics(prev_disk, prev_net)
-                    rows.append(row)
-                    self._set_state("BOOTSTRAPPING", f"Learning system baseline ({i + 1}/{BOOTSTRAP_SAMPLES})…")
+                    row = self._collector.snapshot
+                    self._bootstrap_rows.append(row)
+                    self._bootstrap_count += 1
+                    self._set_state("BOOTSTRAPPING", f"Learning system baseline ({self._bootstrap_count}/{BOOTSTRAP_SAMPLES})…")
                 except Exception as e:
                     log.warning(f"Sample error: {e}")
-
-                if self._stop_event.wait(3.0):
-                    return
-
-            if self._stop_event.is_set():
                 return
-
-            # ── Phase 2: Instant Z-Score Calibration (<1ms) ──
-            try:
-                ai.train(rows)
-            except Exception as e:
-                self._set_state("ERROR", f"Model calibration failed: {e}")
-                if self._timer_locked:
-                    disable_high_resolution_timer(1)
-                    self._timer_locked = False
-                return
-
-            if self._stop_event.is_set():
-                return
-
-            # ── Phase 3: Sentinel Monitoring Loop ──
-            self._set_state("MONITORING", "Sentinel active · 1ms Timer Locked")
-
-            while not self._stop_event.is_set():
-                sleep_duration = SAMPLE_INTERVAL_SEC
-
+            else:
                 try:
-                    # 1. Check for active foreground game
-                    game_info = get_foreground_game_process()
-                    if game_info:
-                        game_pid = game_info["pid"]
-                        game_name = game_info["name"]
-
-                        if self._active_game_pid != game_pid:
-                            self._active_game_pid = game_pid
-                            self._active_game_name = game_name
-
-                            # ── AGGRESSIVE ANTI-STUTTER LAUNCH SEQUENCE ──
-                            # 1. Proactive RAM flush — give game max headroom
-                            flush_res = proactive_ram_flush(game_pid)
-                            freed_mb = flush_res.get("freed_mb", 0)
-
-                            # 2. Elevate game CPU priority
-                            boost_game_priority(game_pid)
-
-                            # 3. Depress background bloatware
-                            lower_background_priority(exclude_pids=[game_pid])
-
-                            # 4. Force GPU to high-performance for this exe
-                            try:
-                                proc = __import__("psutil").Process(game_pid)
-                                exe_path = proc.exe()
-                                set_game_gpu_preference(exe_path)
-                                disable_fullscreen_optimizations(exe_path)
-                            except Exception:
-                                pass
-
-                            # 5. Start dedicated FPS tracker for this game
-                            if self._fps_tracker is not None:
-                                self._fps_tracker.stop()
-                            self._fps_tracker = GameFpsTracker(
-                                pid=game_pid,
-                                game_name=game_name,
-                                callback=self._on_game_fps_update,
-                            )
-                            self._fps_tracker.start()
-
-                            # 6. Log all optimizations applied
-                            try:
-                                from services.benchmark_logger import get_history_service
-                                hs = get_history_service()
-                                hs.start_session(game_name=game_name, executable=game_name)
-                                hs.record_optimization("1.0ms High-Resolution Timer Locked")
-                                hs.record_optimization(f"Priority Elevated ({game_name})")
-                                hs.record_optimization("High Performance Power Plan Active")
-                                hs.record_optimization("Nagle's Algorithm Disabled (TCP_NODELAY)")
-                                hs.record_optimization("Xbox Game DVR Disabled")
-                                hs.record_optimization(f"Proactive RAM Flush: {freed_mb:.0f} MB freed")
-                                hs.record_optimization("GPU High-Performance Preference Set")
-                                hs.record_optimization("Fullscreen Optimizations Disabled")
-                            except Exception:
-                                pass
-
-                            log.info(
-                                f"Anti-stutter launch: {game_name} | "
-                                f"Freed {freed_mb:.0f}MB | Priority boosted | "
-                                f"GPU pref set | Fullscreen opts disabled"
-                            )
-
-                        # In-game: responsive polling (8s, near 0% CPU)
-                        sleep_duration = IN_GAME_SAMPLE_INTERVAL_SEC
-                    else:
-                        if self._active_game_pid is not None:
-                            if self._fps_tracker is not None:
-                                self._fps_tracker.stop()
-                                self._fps_tracker = None
-                            self._last_game_fps = None
-                            self._last_game_1pct = None
-                            try:
-                                from services.benchmark_logger import get_history_service, clear_live_fps
-                                get_history_service().end_session()
-                                clear_live_fps()
-                            except Exception:
-                                pass
-                        self._active_game_pid = None
-                        self._active_game_name = None
-
-                    # 2. Sample telemetry instantaneously (0ms non-blocking)
-                    row, prev_disk, prev_net = sample_system_metrics(prev_disk, prev_net)
-
-                    # 3. Anomaly & pressure evaluation (<0.1ms)
-                    anomaly = ai.detect_anomaly(row)
-                    actions = decide_actions(row, anomaly)
-
-                    # 4. State reporting
-                    if actions == ["NO_ACTION_NEEDED"]:
-                        if self._active_game_name:
-                            fps_part = f" · {self._last_game_fps:.0f} FPS" if self._last_game_fps else ""
-                            status_msg = (
-                                f"🎮 Stabilizing: {self._active_game_name}{fps_part} · "
-                                f"RAM {row.get('mem_percent', 0):.0f}% · 1ms Timer"
-                            )
-                        else:
-                            status_msg = (
-                                f"Sentinel active · 1ms Timer · "
-                                f"CPU {row.get('cpu_percent', 0):.0f}% · RAM {row.get('mem_percent', 0):.0f}%"
-                            )
-                        self._set_state("MONITORING", status_msg)
-                    else:
-                        # Execute safe game-preserving actions
-                        self._execute_actions(actions, row)
-
+                    self.ai.train(self._bootstrap_rows)
                 except Exception as e:
-                    log.warning(f"Sentinel loop error: {e}")
-
-                if self._stop_event.wait(sleep_duration):
+                    self._set_state("ERROR", f"Model calibration failed: {e}")
+                    if self._timer_locked:
+                        disable_high_resolution_timer(1)
+                        self._timer_locked = False
                     return
+                    
+                self._set_state("MONITORING", "Sentinel active · 1ms Timer Locked")
+                self._worker.interval = SAMPLE_INTERVAL_SEC
+                return
 
-        finally:
-            if self._timer_locked:
-                disable_high_resolution_timer(1)
-                self._timer_locked = False
+        if self._state == "MONITORING" or self._state == "ACTING":
+            try:
+                from ai_perf_booster.ai_engine import decide_actions
+                # 1. Check for active foreground game
+                game_info = get_foreground_game_process()
+                if game_info:
+                    game_pid = game_info["pid"]
+                    game_name = game_info["name"]
+
+                    if self._active_game_pid != game_pid:
+                        self._active_game_pid = game_pid
+                        self._active_game_name = game_name
+
+                        # ── AGGRESSIVE ANTI-STUTTER LAUNCH SEQUENCE ──
+                        flush_res = proactive_ram_flush(game_pid)
+                        freed_mb = flush_res.get("freed_mb", 0)
+
+                        boost_game_priority(game_pid)
+                        lower_background_priority(exclude_pids=[game_pid])
+
+                        try:
+                            proc = __import__("psutil").Process(game_pid)
+                            exe_path = proc.exe()
+                            set_game_gpu_preference(exe_path)
+                            disable_fullscreen_optimizations(exe_path)
+                        except Exception:
+                            pass
+
+                        if self._fps_tracker is not None:
+                            self._fps_tracker.stop()
+                        self._fps_tracker = GameFpsTracker(
+                            pid=game_pid,
+                            game_name=game_name,
+                            callback=self._on_game_fps_update,
+                        )
+                        self._fps_tracker.start()
+
+                        try:
+                            from services.benchmark_logger import get_history_service
+                            hs = get_history_service()
+                            hs.start_session(game_name=game_name, executable=game_name)
+                            hs.record_optimization("1.0ms High-Resolution Timer Locked")
+                            hs.record_optimization(f"Priority Elevated ({game_name})")
+                            hs.record_optimization("High Performance Power Plan Active")
+                            hs.record_optimization("Nagle's Algorithm Disabled (TCP_NODELAY)")
+                            hs.record_optimization("Xbox Game DVR Disabled")
+                            hs.record_optimization(f"Proactive RAM Flush: {freed_mb:.0f} MB freed")
+                            hs.record_optimization("GPU High-Performance Preference Set")
+                            hs.record_optimization("Fullscreen Optimizations Disabled")
+                        except Exception:
+                            pass
+
+                    self._worker.interval = IN_GAME_SAMPLE_INTERVAL_SEC
+                else:
+                    if self._active_game_pid is not None:
+                        if self._fps_tracker is not None:
+                            self._fps_tracker.stop()
+                            self._fps_tracker = None
+                        self._last_game_fps = None
+                        self._last_game_1pct = None
+                        try:
+                            from services.benchmark_logger import get_history_service, clear_live_fps
+                            get_history_service().end_session()
+                            clear_live_fps()
+                        except Exception:
+                            pass
+                    self._active_game_pid = None
+                    self._active_game_name = None
+                    self._worker.interval = SAMPLE_INTERVAL_SEC
+
+                # 2. Sample telemetry instantaneously from SharedMetricsProvider
+                row = self._collector.snapshot
+
+                # 3. Anomaly & pressure evaluation (<0.1ms)
+                anomaly = self.ai.detect_anomaly(row)
+                actions = decide_actions(row, anomaly)
+
+                # 4. State reporting
+                if actions == ["NO_ACTION_NEEDED"]:
+                    if self._active_game_name:
+                        fps_part = f" · {self._last_game_fps:.0f} FPS" if self._last_game_fps else ""
+                        status_msg = (
+                            f"🎮 Stabilizing: {self._active_game_name}{fps_part} · "
+                            f"RAM {row.get('ram_usage', 0):.0f}% · 1ms Timer"
+                        )
+                    else:
+                        status_msg = (
+                            f"Sentinel active · 1ms Timer · "
+                            f"CPU {row.get('cpu_usage', 0):.0f}% · RAM {row.get('ram_usage', 0):.0f}%"
+                        )
+                    self._set_state("MONITORING", status_msg)
+                else:
+                    # Execute safe game-preserving actions
+                    self._execute_actions(actions, row)
+
+            except Exception as e:
+                log.warning(f"Sentinel loop error: {e}")
 
     def _execute_actions(self, actions: list, row: dict):
         """Execute non-disruptive optimizations while protecting the game."""
@@ -817,15 +622,26 @@ class AIBoostService:
         exclude_pids = [self._active_game_pid] if self._active_game_pid else []
 
         for action in actions:
-            if self._stop_event.is_set():
+            if self._worker.stop_event.is_set():
                 return
+                
+            try:
+                from sentinel.intervention_controller import InterventionController
+                if not InterventionController.get_instance().check_legacy_allowed(action):
+                    continue
+            except ImportError:
+                pass
 
             if action == "CLEAR_STANDBY_MEMORY":
-                # Clear standby cache and trim ONLY background apps
-                res = clear_standby_memory()
-                trim_res = trim_all_working_sets(exclude_pids=exclude_pids)
-                freed = res.get("freed_mb", 0) + trim_res.get("freed_mb", 0)
-                results.append(f"Freed {freed:,.0f} MB RAM")
+                # Clear standby cache and trim ONLY background apps via SentinelService
+                try:
+                    from sentinel.service import SentinelService
+                    SentinelService.get_instance().request_intervention("clear_standby_memory")
+                    SentinelService.get_instance().request_intervention("trim_all_working_sets", {"exclude_pids": exclude_pids})
+                    freed = 0 # Cannot track memory strictly here without proper verification logic in controller
+                    results.append("RAM Purge requested via Sentinel")
+                except ImportError:
+                    pass
                 try:
                     from services.benchmark_logger import get_history_service
                     get_history_service().record_optimization("Standby Cache & Working Sets Purged", freed_mb=freed)
@@ -833,8 +649,12 @@ class AIBoostService:
                     pass
 
             elif action == "LOWER_BACKGROUND_PROCESS_PRIORITY":
-                res = lower_background_priority(exclude_pids=exclude_pids)
-                results.append(f"Deprioritized {res['lowered']} background apps")
+                try:
+                    from sentinel.service import SentinelService
+                    SentinelService.get_instance().request_intervention("lower_background_priority", {"exclude_pids": exclude_pids})
+                    results.append("Background Deprioritization requested via Sentinel")
+                except ImportError:
+                    pass
                 try:
                     from services.benchmark_logger import get_history_service
                     get_history_service().record_optimization(f"Deprioritized {res['lowered']} Background Apps")
@@ -853,10 +673,10 @@ class AIBoostService:
         self._set_state("ACTING", summary)
 
         # Anti-thrash cooldown to prevent hitching (responsive to stop)
-        if self._stop_event.wait(COOLDOWN_SEC):
+        if self._worker.stop_event.wait(COOLDOWN_SEC):
             return
 
-        if not self._stop_event.is_set():
+        if not self._worker.stop_event.is_set():
             if self._active_game_name:
                 self._set_state("MONITORING", f"🎮 Stabilizing: {self._active_game_name} · 1ms Timer")
             else:

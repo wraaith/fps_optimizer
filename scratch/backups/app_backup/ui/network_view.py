@@ -400,17 +400,6 @@ class NetworkView(ctk.CTkFrame):
     def _on_capture_baseline(self):
         self.snap_btn.configure(state="disabled", text="Capturing...")
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             self.feature.snapshots.ensure_baseline_snapshot()
             try:
                 self.after(0, lambda: [self._refresh_snapshot_card(), self.snap_btn.configure(state="normal")])
@@ -420,17 +409,6 @@ class NetworkView(ctk.CTkFrame):
 
     def _refresh_telemetry_async(self):
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             adp = self.feature.tweaks.get_active_adapter_name() or "Disconnected"
             gw = self.feature.diagnostics.get_default_gateway()
             meta = self.feature.snapshots.get_baseline_metadata()
@@ -578,17 +556,6 @@ class NetworkView(ctk.CTkFrame):
 
         self.diag_btn.configure(state="disabled", text="Probing...")
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             summary = self.feature.run_diagnostics(target=host)
             self.feature.snapshots.save_latest_diagnostics(summary)
             try:
@@ -665,17 +632,6 @@ class NetworkView(ctk.CTkFrame):
             except Exception:
                 pass
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             res = self.feature.diagnostics.run_automated_bufferbloat_test(progress_callback=_prog)
             try:
                 self.after(0, self._apply_bloat, res)
@@ -741,8 +697,8 @@ class NetworkView(ctk.CTkFrame):
         c3 = self._make_card(tab, "⚡  High & Ultimate Performance Power Plan", "Activates low-latency CPU scheduling power plans with full GUID recorded for rollback.")
         b3 = ctk.CTkFrame(c3, fg_color="transparent")
         b3.pack(fill="x", padx=16, pady=(0, 12))
-        ctk.CTkButton(b3, text="High Performance", font=get_font(10, "bold"), width=160, height=30, command=lambda: self._tweak_action(intervention_name="power_plan", args={"requested_guid": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"}, success_msg="High Performance Plan Applied")).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(b3, text="Ultimate Performance", font=get_font(10, "bold"), width=170, height=30, command=lambda: self._tweak_action(intervention_name="power_plan", args={"requested_guid": "e9a42b02-d5df-448d-aa00-03f14749eb61"}, success_msg="Ultimate Performance Plan Applied")).pack(side="left", padx=4)
+        ctk.CTkButton(b3, text="High Performance", font=get_font(10, "bold"), width=160, height=30, command=lambda: self._tweak_action(lambda: self.feature.tweaks.apply_high_performance_power_plan(False), "High Performance Plan Applied")).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(b3, text="Ultimate Performance", font=get_font(10, "bold"), width=170, height=30, command=lambda: self._tweak_action(lambda: self.feature.tweaks.apply_high_performance_power_plan(True), "Ultimate Performance Plan Applied")).pack(side="left", padx=4)
 
         # 4. GameDVR
         c4 = self._make_card(tab, "🎮  Xbox GameDVR Background Capture", "Disables continuous background video capture hooks to free DWM rendering cycles.")
@@ -826,63 +782,19 @@ class NetworkView(ctk.CTkFrame):
         ctk.CTkLabel(card, text=desc, font=get_font(10, "normal"), text_color=theme["text_secondary"]).pack(anchor="w", padx=16, pady=(0, 8))
         return card
 
-    def _tweak_action(self, fn=None, success_msg: str = "", intervention_name: str = None, args: dict = None):
+    def _tweak_action(self, fn, success_msg: str):
         def _worker():
-            from sentinel.service import SentinelService
-            
-            # Use SentinelService if typed intervention provided
-            if intervention_name:
-                res = SentinelService.get_instance().request_intervention(intervention_name, args)
-                status = res.get("status")
-                ok = status in ("applied", "dry_run")
-                
-                # Format specific feedback for typed interventions
-                if ok:
-                    msg = success_msg or f"{intervention_name} {status}"
-                else:
-                    msg = f"Blocked/Failed: {res.get('reason', res.get('status', 'Unknown'))}"
-                
-                try:
-                    self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
-                except Exception:
-                    pass
-                return
-
-            # Legacy behavior for non-typed tweaks
+            res = fn()
+            ok = res.get("success", False)
+            msg = success_msg if ok else f"Failed: {res.get('error')}"
             try:
-                if SentinelService.get_instance().is_running() and SentinelService.get_instance().controller.mode == 1: # MONITOR_ONLY fallback
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='❌ Blocked: MONITOR_ONLY', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
+                self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
             except Exception:
                 pass
-            
-            if fn:
-                res = fn()
-                ok = res.get("success", False) if isinstance(res, dict) else bool(res)
-                msg = success_msg if ok else f"Failed: {res.get('error') if isinstance(res, dict) else 'Unknown'}"
-                try:
-                    self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
-                except Exception:
-                    pass
-        import threading
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_apply_safe_profile(self):
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             res = self.feature.apply_safe_optimization()
             ok = res.get("success", False)
             try:
@@ -892,42 +804,10 @@ class NetworkView(ctk.CTkFrame):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _apply_dns(self, p: str, s: Optional[str], nm: str):
-        def _worker():
-            from sentinel.service import SentinelService
-            servers = []
-            if s:
-                servers = [x.strip() for x in str(s).split(',') if x.strip()]
-                
-            res = SentinelService.get_instance().request_intervention("dns", {
-                "adapter_id": p,
-                "servers": servers,
-                "mode": nm
-            })
-            
-            ok = res.get("status") == "applied"
-            msg = f"DNS set to {nm} ({p})" if ok else f"Failed or Blocked: {res.get('reason', res.get('status'))}"
-            try:
-                self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
-            except Exception:
-                pass
-        import threading
-        threading.Thread(target=_worker, daemon=True).start()
+        self._tweak_action(lambda: self.feature.tweaks.apply_dns_servers(p, s, nm), f"DNS set to {nm} ({p})")
 
-    def _revert_dns(self, p: str = None):
-        def _worker():
-            from sentinel.service import SentinelService
-            res = SentinelService.get_instance().request_intervention("dns", {
-                "adapter_id": p if p else "Ethernet", # Needs real adapter or logic, fallback
-                "mode": "dhcp"
-            })
-            ok = res.get("status") == "applied"
-            msg = "DNS returned to DHCP" if ok else f"Failed or Blocked: {res.get('reason', res.get('status'))}"
-            try:
-                self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
-            except Exception:
-                pass
-        import threading
-        threading.Thread(target=_worker, daemon=True).start()
+    def _revert_dns(self):
+        self._tweak_action(self.feature.tweaks.revert_dns_to_dhcp, "DNS returned to DHCP")
 
     # ── Tab 4: Router QoS/SQM ──────────────────────────────────────────
 
@@ -1133,17 +1013,6 @@ class NetworkView(ctk.CTkFrame):
             except Exception:
                 pass
         def _worker():
-
-            try:
-                from sentinel.service import SentinelService
-                if SentinelService.get_instance().is_running():
-                    try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
             res = self.feature.restore_previous_state(progress_callback=_prog)
             try:
                 self.after(0, self._after_restore, res)

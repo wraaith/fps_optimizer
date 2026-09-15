@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0.0",
+  "baseline": {
+    "created_at": "",
+    "dns": {},
+    "power_plan": {},
+    "game_settings": {},
+    "adapter_settings": {}
+  },
+  "changes": [
+    {
+      "id": "test-20260913-213414-2998",
+      "category": "test",
+      "setting": "First Setting",
+      "target": "target1",
+      "old_value": "v1",
+      "old_mode": false,
+      "new_value": "v2",
+      "status": "reverted",
+      "reboot_required": false,
+      "timestamp": "2026-09-13 21:34:14",
+      "verification_status": "verified",
+      "reason": "Setting 'First Setting' restored to v1",
+      "updated_at": "2026-09-13 21:34:14"
+    },
+    {
+      "id": "test-20260913-213414-0b9e",
+      "category": "test",
+      "setting": "Second Setting",
+      "target": "target2",
+      "old_value": "vA",
+      "old_mode": false,
+      "new_value": "vB",
+      "status": "reverted",
+      "reboot_required": false,
+      "timestamp": "2026-09-13 21:34:14",
+      "verification_status": "verified",
+      "reason": "Setting 'Second Setting' restored to vA",
+      "updated_at": "2026-09-13 21:34:14"
+    },
+    {
+      "id": "dns-20260913-213414-98d2",
+      "category": "dns",
+      "setting": "Invalid DNS",
+      "target": "!@#$%^&*()",
+      "old_value": [
+        "1.1.1.1"
+      ],
+      "old_mode": null,
+      "new_value": [
+        "8.8.8.8"
+      ],
+      "status": "skipped",
+      "reboot_required": false,
+      "timestamp": "2026-09-13 21:34:14",
+      "verification_status": "invalid_identifier",
+      "reason": "Invalid interface identifier format: '!@#$%^&*()'",
+      "updated_at": "2026-09-13 21:34:14"
+    },
+    {
+      "id": "network_stack-20260913-213414-fe45",
+      "category": "network_stack",
+      "setting": "Winsock Reset (Recovery Action)",
+      "target": "System",
+      "old_value": "Custom",
+      "old_mode": null,
+      "new_value": "Factory Defaults",
+      "status": "skipped",
+      "reboot_required": false,
+      "timestamp": "2026-09-13 21:34:14",
+      "verification_status": "manual_intervention_required",
+      "reason": "Winsock reset is a recovery action requiring restart / manual intervention.",
+      "updated_at": "2026-09-13 21:34:14"
+    },
+    {
+      "id": "test-20260913-213414-1d90",
+      "category": "test",
+      "setting": "Setting To Audit",
+      "target": "target",
+      "old_value": "old",
+      "old_mode": null,
+      "new_value": "new",
+      "status": "reverted",
+      "reboot_required": false,
+      "timestamp": "2026-09-13 21:34:14",
+      "verification_status": "verified",
+      "reason": "Setting 'Setting To Audit' restored to old",
+      "updated_at": "2026-09-13 21:34:14"
+    }
+  ],
+  "latest_diagnostics": {},
+  "profiles": {}
+}

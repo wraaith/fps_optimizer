@@ -412,7 +412,7 @@ class MainWindow(ctk.CTk):
         from sentinel.service import SentinelService
         self._clear_main()
         self._set_active_nav_button(self.sentinel_button)
-        self.current_view = SentinelView(self.main_frame, service=SentinelService.get_instance())
+        self.current_view = SentinelView(self.main_frame, service=SentinelService())
         self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
     # ── Overlay settings popup ─────────────────────────────────
@@ -518,22 +518,37 @@ class MainWindow(ctk.CTk):
             self._overlay_proc = None
 
         def _orphan_cleanup_worker():
-            from sentinel.service import SentinelService
-            # Request dry-run cleanup. Real termination is blocked unless UI explicitly passes legacy_mode=True and dry_run=False.
-            # Here we default to legacy_mode=True, dry_run=True for safe UI fallback.
-            res = SentinelService.get_instance().request_intervention("process_cleanup", {
-                "legacy_mode": True,
-                "dry_run": True
-            })
-            
-            # The UI must display the result. We print to log for now.
-            if res.get("status") == "blocked":
-                print(f"[UI] Process cleanup blocked: {res.get('reason')}")
-            else:
-                details = res.get("details", {})
-                term = len(details.get("terminated", []))
-                rej = len(details.get("rejected", []))
-                print(f"[UI] Process cleanup dry_run. Terminated {term} (simulated), Rejected {rej}.")
+            try:
+                current_pid = os.getpid()
+                protected_pids = {current_pid}
+                try:
+                    p = psutil.Process(current_pid)
+                    if p.parent():
+                        protected_pids.add(p.parent().pid)
+                except Exception:
+                    pass
+
+                for proc in psutil.process_iter(['pid', 'name']):
+                    try:
+                        pid = proc.info.get('pid')
+                        pname = (proc.info.get('name') or '').lower()
+                        if pid not in protected_pids and 'python' in pname:
+                            cmdline = proc.cmdline()
+                            if any('--overlay' in arg for arg in cmdline):
+                                proc.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+            except Exception:
+                pass
+
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "PresentMon-2.5.1-x64.exe"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+            except Exception:
+                pass
 
         if async_orphan_cleanup:
             threading.Thread(target=_orphan_cleanup_worker, daemon=True).start()
@@ -567,10 +582,10 @@ class MainWindow(ctk.CTk):
         except Exception:
             pass
 
-        # 3. Stop Universal Sentinel service and AI Boost watchdog
+        # 3. Stop AI Sentinel service
         try:
-            from sentinel.service import SentinelService
-            SentinelService.get_instance().emergency_stop()
+            from optimize.ai_boost_service import get_ai_boost_service
+            get_ai_boost_service().stop()
         except Exception:
             pass
 
