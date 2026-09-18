@@ -174,14 +174,13 @@ class DiagnosticsEngine:
                 break
 
             cmd = ["ping", "-n", "1", "-w", str(timeout_ms), host]
+            proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=no_window)
                 with self._lock:
                     self._active_proc = proc
 
                 stdout, _ = proc.communicate(timeout=timeout_sec + 1.0)
-                with self._lock:
-                    self._active_proc = None
 
                 # Parse RTT from ping output
                 # Matches: "time=23ms" or "time<1ms"
@@ -192,10 +191,18 @@ class DiagnosticsEngine:
                 else:
                     timeouts += 1
             except subprocess.TimeoutExpired:
-                proc.kill()
+                if proc:
+                    try:
+                        proc.kill()
+                        proc.communicate(timeout=1.0)
+                    except Exception:
+                        pass
                 timeouts += 1
             except Exception:
                 timeouts += 1
+            finally:
+                with self._lock:
+                    self._active_proc = None
 
             # Brief pause between probes to avoid network flooding
             if i < probe_count - 1 and cancel_event and not cancel_event.is_set():
@@ -382,13 +389,18 @@ class DiagnosticsEngine:
         stop_worker = threading.Event()
 
         def _download_worker():
+            import socket
             try:
                 req = urllib.request.Request(test_url, headers={"User-Agent": "FPSOptimizer-Probe/1.0"})
-                with urllib.request.urlopen(req, timeout=8) as resp:
+                # Use a small timeout so the read loop wakes up to check stop_worker
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
                     while not stop_worker.is_set():
-                        chunk = resp.read(64 * 1024)
-                        if not chunk:
-                            break
+                        try:
+                            chunk = resp.read(64 * 1024)
+                            if not chunk:
+                                break
+                        except socket.timeout:
+                            continue
             except Exception:
                 pass
 

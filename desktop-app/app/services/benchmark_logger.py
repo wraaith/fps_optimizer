@@ -30,6 +30,66 @@ _HISTORY_FILE = _DATA_DIR / "gameplay_history.json"
 _LIVE_FPS_FILE = _DATA_DIR / "live_fps.json"
 
 
+def _collect_sentinel_telemetry() -> Optional[Dict[str, Any]]:
+    """Safely collect telemetry snapshot from the AI Sentinel service.
+
+    Returns a dict with sentinel state, mode, event timeline (last 50 entries),
+    anomaly classification, metrics health, and debug info.  Returns None if
+    the sentinel is unavailable or any error occurs.
+    """
+    try:
+        from sentinel.service import SentinelService
+        svc = SentinelService.get_instance()
+
+        # Event timeline – cap at 50 most recent to keep log size reasonable
+        timeline = svc.get_event_timeline()
+        timeline_tail = timeline[-50:] if len(timeline) > 50 else timeline
+
+        # Metrics health snapshot
+        try:
+            metrics_health = svc.get_metrics_health()
+        except Exception:
+            metrics_health = {}
+
+        # Advanced debug info
+        try:
+            debug_info = svc.get_advanced_debug_info()
+        except Exception:
+            debug_info = {}
+
+        # Game detection info
+        game_detection = {}
+        try:
+            from sentinel.game_detection import detect_active_game
+            result = detect_active_game()
+            if result is not None:
+                game_detection = {
+                    "confidence": result.confidence,
+                    "detection_method": result.detection_method,
+                    "window_mode": result.window_mode,
+                }
+        except Exception:
+            pass
+
+        return {
+            "state": svc.get_state().name,
+            "mode": svc.controller.mode.name,
+            "session_id": svc.session_id,
+            "is_running": svc.is_running(),
+            "event_timeline": timeline_tail,
+            "event_count": len(timeline),
+            "anomaly": dict(svc._last_anomaly),
+            "recommendation": dict(svc._last_recommendation),
+            "blocked_operations_count": svc._blocked_operations_count,
+            "metrics_health": metrics_health,
+            "debug_info": debug_info,
+            "game_detection": game_detection,
+            "collected_at": time.time(),
+        }
+    except Exception:
+        return None
+
+
 def write_live_fps(data: Dict[str, Any]) -> None:
     """Persist current live FPS metrics for inter-process communication with atomic swap and retry."""
     try:
@@ -63,9 +123,42 @@ def read_live_fps() -> Optional[Dict[str, Any]]:
             content = f.read().strip()
             if not content:
                 return None
-            return json.loads(content)
+            
+            data = json.loads(content)
+            
+            # Validation Step
+            fps_confidence = data.get("fps_confidence")
+            fps_state = data.get("fps_state")
+            raw_fps = data.get("fps")
+            
+            # Missing or malformed payload
+            if not isinstance(data, dict) or "ui_fps_text" not in data:
+                return {
+                    "fps": None,
+                    "fps_confidence": "unavailable",
+                    "fps_state": "ERROR",
+                    "frame_source_status": "error",
+                    "ui_fps_text": "Frame telemetry unavailable"
+                }
+
+            # Contradictory states
+            if fps_confidence == "measured":
+                if not isinstance(raw_fps, (int, float)) or raw_fps <= 0 or fps_state != "FPS_READY":
+                    data["fps"] = None
+                    data["fps_confidence"] = "unavailable"
+                    data["ui_fps_text"] = "Frame telemetry unavailable"
+            else:
+                data["fps"] = None
+                
+            return data
     except Exception:
-        return None
+        return {
+            "fps": None,
+            "fps_confidence": "unavailable",
+            "fps_state": "ERROR",
+            "frame_source_status": "error",
+            "ui_fps_text": "Frame telemetry unavailable"
+        }
 
 
 def clear_live_fps() -> None:
@@ -176,7 +269,7 @@ class GameplaySession:
         stability_ratio = min(1.0, max(0.5, (low_1pct_fps / avg_fps) if avg_fps > 0 else 0.85))
         stability_pct = f"{round(stability_ratio * 100.0, 1)}%"
 
-        return {
+        record = {
             "id": self.id,
             "game_name": self.game_name,
             "executable": self.executable,
@@ -195,6 +288,13 @@ class GameplaySession:
             "samples_count": len(valid_samples),
             "is_estimated": is_estimated,
         }
+
+        # Attach sentinel telemetry if available
+        sentinel_data = _collect_sentinel_telemetry()
+        if sentinel_data is not None:
+            record["sentinel_telemetry"] = sentinel_data
+
+        return record
 
 
 class BenchmarkHistoryService:

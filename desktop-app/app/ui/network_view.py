@@ -1,3 +1,4 @@
+from ui.safe_view import SafeViewMixin
 """
 Network Stabilization View for FPS Optimizer.
 Consolidated 6-tab interface utilizing the NetworkStabilizerFeature engine:
@@ -17,7 +18,7 @@ import threading
 import customtkinter as ctk
 from typing import Optional, Callable, Dict, Any, List
 
-from ui.theme_manager import is_cyber_mode, get_theme, get_font, on_theme_changed
+from ui.theme_manager import is_cyber_mode, get_theme, get_font, on_theme_changed, remove_theme_listener
 from network_stabilizer import (
     NetworkStabilizerFeature,
     DiagnosticsEngine,
@@ -88,11 +89,18 @@ class StatCard(ctk.CTkFrame):
         self.sub_lbl.pack(anchor="w", padx=12, pady=(0, 8))
 
     def update_val(self, val: str, subtext: Optional[str] = None, color: Optional[str] = None):
-        self.val_lbl.configure(text=val)
-        if color:
-            self.val_lbl.configure(text_color=color)
-        if subtext is not None:
-            self.sub_lbl.configure(text=subtext)
+        try:
+            if getattr(self, "_is_destroyed", False) or getattr(self.val_lbl, "_is_destroyed", False):
+                return
+            if not self.winfo_exists() or not self.val_lbl.winfo_exists():
+                return
+            self.val_lbl.configure(text=val)
+            if color:
+                self.val_lbl.configure(text_color=color)
+            if subtext is not None:
+                self.sub_lbl.configure(text=subtext)
+        except Exception:
+            pass
 
 
 class LatencyGraphCanvas(ctk.CTkFrame):
@@ -110,7 +118,36 @@ class LatencyGraphCanvas(ctk.CTkFrame):
             highlightbackground="#1a2b5e" if is_cyber_mode() else "#1e1e1e"
         )
         self.canvas.pack(fill="both", expand=True)
-        self.bind("<Configure>", lambda e: self.redraw())
+        
+        self._resize_job = None
+        self._resize_guard = False
+        self._last_size = None
+        
+        def _on_canvas_configure(e):
+            if getattr(self, "_resize_guard", False):
+                return
+            size = (e.width, e.height)
+            if getattr(self, "_last_size", None) == size:
+                return
+            self._last_size = size
+            if getattr(self, "_resize_job", None) is not None:
+                try:
+                    self.after_cancel(self._resize_job)
+                except Exception:
+                    pass
+            self._resize_job = self.after_idle(_apply_resize)
+            
+        def _apply_resize():
+            self._resize_job = None
+            if getattr(self, "_resize_guard", False) or not self.winfo_exists():
+                return
+            self._resize_guard = True
+            try:
+                self.redraw()
+            finally:
+                self._resize_guard = False
+                
+        self.bind("<Configure>", _on_canvas_configure)
         self._draw_empty()
 
     def add_point(self, val: float):
@@ -129,6 +166,14 @@ class LatencyGraphCanvas(ctk.CTkFrame):
             fill="#47567d" if is_cyber_mode() else "#555555",
             font=("Segoe UI", 10, "italic")
         )
+
+    def destroy(self):
+        if getattr(self, "_resize_job", None) is not None:
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:
+                pass
+        super().destroy()
 
     def redraw(self):
         if not self.data_points:
@@ -186,7 +231,7 @@ class LatencyGraphCanvas(ctk.CTkFrame):
 
 # ── Main 6-Tab View ───────────────────────────────────────────────────
 
-class NetworkView(ctk.CTkFrame):
+class NetworkView(SafeViewMixin, ctk.CTkFrame):
     """
     Dedicated in-window Network Stabilization view.
     Exposes all 6 modules: Overview, Diagnostics, Windows Tweaks,
@@ -198,6 +243,7 @@ class NetworkView(ctk.CTkFrame):
         super().__init__(parent, fg_color=theme["bg_main"], **kwargs)
 
         self.on_back = on_back
+        self._is_destroyed = False
         self.feature = NetworkStabilizerFeature(app_context=self)
         self._is_live_monitoring = False
 
@@ -274,7 +320,7 @@ class NetworkView(ctk.CTkFrame):
                 btn.configure(
                     fg_color="#0d183d" if is_cyber else "#2a2a2a",
                     border_width=1 if is_cyber else 0,
-                    border_color="#00f0ff" if is_cyber else "transparent",
+                    border_color="#00f0ff" if is_cyber else "#2a2a2a",
                     text_color="#00f0ff" if is_cyber else "#ffffff"
                 )
             else:
@@ -405,7 +451,7 @@ class NetworkView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -413,7 +459,7 @@ class NetworkView(ctk.CTkFrame):
                 pass
             self.feature.snapshots.ensure_baseline_snapshot()
             try:
-                self.after(0, lambda: [self._refresh_snapshot_card(), self.snap_btn.configure(state="normal")])
+                self.schedule_ui_callback(0, lambda: [self._refresh_snapshot_card(), self.snap_btn.configure(state="normal")])
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
@@ -425,7 +471,7 @@ class NetworkView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -448,7 +494,7 @@ class NetworkView(ctk.CTkFrame):
                         break
             pwr = meta.get("power_plan", {}).get("name", "High Performance") if meta else "Custom"
             try:
-                self.after(0, lambda: [
+                self.schedule_ui_callback(0, lambda: [
                     self.ov_adapter.update_val(adp[:15], "Interface UP", "#00ff9f" if adp != "Disconnected" else "#f43f5e"),
                     self.ov_gateway.update_val(gw, "Home Router IP", "#38bdf8"),
                     self.ov_dns.update_val(dns_str[:16], "Active Resolver", "#fbbf24"),
@@ -583,7 +629,7 @@ class NetworkView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -592,7 +638,7 @@ class NetworkView(ctk.CTkFrame):
             summary = self.feature.run_diagnostics(target=host)
             self.feature.snapshots.save_latest_diagnostics(summary)
             try:
-                self.after(0, self._apply_probe_results, summary)
+                self.schedule_ui_callback(0, self._apply_probe_results, summary)
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
@@ -647,11 +693,11 @@ class NetworkView(ctk.CTkFrame):
             self._is_live_monitoring = True
             self.live_btn.configure(text="⏹ STOP MONITOR", fg_color="#f43f5e")
             def _loop():
-                while self._is_live_monitoring:
+                while self._is_live_monitoring and self.is_view_alive():
                     try:
                         res = self.feature.diagnostics.ping_host("1.1.1.1", count=1, timeout_ms=800)
-                        if res.get("samples"):
-                            self.after(0, self.graph.add_point, res["samples"][0])
+                        if res.get("samples") and self.is_view_alive():
+                            self.schedule_ui_callback(0, self.graph.add_point, res["samples"][0])
                     except Exception:
                         pass
                     time.sleep(1.0)
@@ -661,7 +707,7 @@ class NetworkView(ctk.CTkFrame):
         self.bloat_btn.configure(state="disabled", text="Testing...")
         def _prog(m):
             try:
-                self.after(0, lambda: self.bloat_stat.configure(text=m))
+                self.schedule_ui_callback(0, lambda: self.bloat_stat.configure(text=m))
             except Exception:
                 pass
         def _worker():
@@ -670,7 +716,7 @@ class NetworkView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -678,7 +724,7 @@ class NetworkView(ctk.CTkFrame):
                 pass
             res = self.feature.diagnostics.run_automated_bufferbloat_test(progress_callback=_prog)
             try:
-                self.after(0, self._apply_bloat, res)
+                self.schedule_ui_callback(0, self._apply_bloat, res)
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
@@ -843,7 +889,7 @@ class NetworkView(ctk.CTkFrame):
                     msg = f"Blocked/Failed: {res.get('reason', res.get('status', 'Unknown'))}"
                 
                 try:
-                    self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
+                    self.schedule_ui_callback(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
                 except Exception:
                     pass
                 return
@@ -852,7 +898,7 @@ class NetworkView(ctk.CTkFrame):
             try:
                 if SentinelService.get_instance().is_running() and SentinelService.get_instance().controller.mode == 1: # MONITOR_ONLY fallback
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='❌ Blocked: MONITOR_ONLY', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='❌ Blocked: MONITOR_ONLY', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -864,7 +910,7 @@ class NetworkView(ctk.CTkFrame):
                 ok = res.get("success", False) if isinstance(res, dict) else bool(res)
                 msg = success_msg if ok else f"Failed: {res.get('error') if isinstance(res, dict) else 'Unknown'}"
                 try:
-                    self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
+                    self.schedule_ui_callback(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
                 except Exception:
                     pass
         import threading
@@ -877,7 +923,7 @@ class NetworkView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -886,7 +932,7 @@ class NetworkView(ctk.CTkFrame):
             res = self.feature.apply_safe_optimization()
             ok = res.get("success", False)
             try:
-                self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {res.get('message')}", text_color="#00ff9f" if ok else "#f43f5e"))
+                self.schedule_ui_callback(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {res.get('message')}", text_color="#00ff9f" if ok else "#f43f5e"))
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
@@ -907,7 +953,7 @@ class NetworkView(ctk.CTkFrame):
             ok = res.get("status") == "applied"
             msg = f"DNS set to {nm} ({p})" if ok else f"Failed or Blocked: {res.get('reason', res.get('status'))}"
             try:
-                self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
+                self.schedule_ui_callback(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
             except Exception:
                 pass
         import threading
@@ -923,7 +969,7 @@ class NetworkView(ctk.CTkFrame):
             ok = res.get("status") == "applied"
             msg = "DNS returned to DHCP" if ok else f"Failed or Blocked: {res.get('reason', res.get('status'))}"
             try:
-                self.after(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
+                self.schedule_ui_callback(0, lambda: self.tweak_feed.configure(text=f"{'✅' if ok else '❌'} {msg}", text_color="#00ff9f" if ok else "#f43f5e"))
             except Exception:
                 pass
         import threading
@@ -1129,7 +1175,7 @@ class NetworkView(ctk.CTkFrame):
         self.rb_stat.configure(text="Restoring settings and verifying post-restore state...", text_color="#fbbf24")
         def _prog(m):
             try:
-                self.after(0, lambda: self.rb_stat.configure(text=m, text_color="#fbbf24"))
+                self.schedule_ui_callback(0, lambda: self.rb_stat.configure(text=m, text_color="#fbbf24"))
             except Exception:
                 pass
         def _worker():
@@ -1138,7 +1184,7 @@ class NetworkView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -1146,7 +1192,7 @@ class NetworkView(ctk.CTkFrame):
                 pass
             res = self.feature.restore_previous_state(progress_callback=_prog)
             try:
-                self.after(0, self._after_restore, res)
+                self.schedule_ui_callback(0, self._after_restore, res)
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
@@ -1232,7 +1278,26 @@ class NetworkView(ctk.CTkFrame):
             self.rb_stat.configure(text=f"Rollback failed: {change.get('setting')} — {res.get('reason')}", text_color="#f43f5e")
         self._refresh_timeline()
 
+    def destroy(self):
+        """Cancels background diagnostic threads, unregisters theme listener, and cleans up cleanly."""
+        self._is_destroyed = True
+        self._is_live_monitoring = False
+        try:
+            remove_theme_listener(self.apply_theme)
+        except Exception:
+            pass
+        try:
+            self.feature.cancel_active_diagnostics()
+        except Exception:
+            pass
+        super().destroy()
+
     def apply_theme(self, is_cyber: bool):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         theme = get_theme()
         self.configure(fg_color=theme["bg_main"])
         if hasattr(self, "back_btn"):

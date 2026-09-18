@@ -30,11 +30,26 @@ class LegacyAIProvider:
 class LegacyActionProvider:
     @staticmethod
     def clear_standby_memory() -> Dict[str, Any]:
-        return legacy_actions.clear_standby_memory()
-        
+        try:
+            from optimize.optimizer_service import clear_standby_memory as opt_clear
+            return opt_clear()
+        except Exception:
+            success = legacy_actions.clear_standby_memory()
+            return {"success": success, "freed_mb": 0.0}
+
     @staticmethod
     def trim_all_working_sets(exclude_pids=None) -> Dict[str, Any]:
-        return legacy_actions.trim_all_working_sets(exclude_pids)
+        try:
+            from optimize.optimizer_service import trim_all_working_sets as opt_trim
+            res = dict(opt_trim(exclude_pids=exclude_pids))
+            if "success" not in res:
+                res["success"] = res.get("trimmed", 0) > 0
+            res["trimmed_count"] = res.get("trimmed", 0)
+            return res
+        except Exception:
+            fn = getattr(legacy_actions, "trim_all_working_sets", getattr(legacy_actions, "trim_working_sets_safe", None))
+            pids = fn(exclude_pids) if fn else []
+            return {"success": bool(pids), "trimmed": len(pids) if isinstance(pids, list) else 0, "freed_mb": 0.0}
         
 class NetworkDiagnosticsProvider:
     @staticmethod

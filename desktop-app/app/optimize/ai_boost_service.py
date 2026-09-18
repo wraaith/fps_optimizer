@@ -633,33 +633,45 @@ class AIBoostService:
                 pass
 
             if action == "CLEAR_STANDBY_MEMORY":
-                # Clear standby cache and trim ONLY background apps via SentinelService
                 try:
                     from sentinel.service import SentinelService
-                    SentinelService.get_instance().request_intervention("clear_standby_memory")
-                    SentinelService.get_instance().request_intervention("trim_all_working_sets", {"exclude_pids": exclude_pids})
-                    freed = 0 # Cannot track memory strictly here without proper verification logic in controller
-                    results.append("RAM Purge requested via Sentinel")
-                except ImportError:
-                    pass
-                try:
-                    from services.benchmark_logger import get_history_service
-                    get_history_service().record_optimization("Standby Cache & Working Sets Purged", freed_mb=freed)
-                except Exception:
-                    pass
+                    # Single call as per constraint
+                    res = SentinelService.get_instance().request_intervention("clear_standby_memory", {"exclude_pids": exclude_pids})
+                    
+                    if res.get("status") == "applied":
+                        freed = res.get("details", {}).get("freed_mb", 0) if isinstance(res, dict) else 0
+                        results.append("RAM Purge applied")
+                        try:
+                            from services.benchmark_logger import get_history_service
+                            get_history_service().record_optimization("Standby Cache & Working Sets Purged", freed_mb=freed)
+                        except Exception:
+                            pass
+                    else:
+                        reason = res.get("reason", "unknown")
+                        results.append(f"RAM Purge {res.get('status')} ({reason})")
+                        log.info(f"AI intervention clear_standby_memory was {res.get('status')}: {reason}")
+                except Exception as e:
+                    log.exception("AI intervention failed", extra={"action": "CLEAR_STANDBY_MEMORY", "session_id": getattr(self, "session_id", "unknown")})
 
             elif action == "LOWER_BACKGROUND_PROCESS_PRIORITY":
                 try:
                     from sentinel.service import SentinelService
-                    SentinelService.get_instance().request_intervention("lower_background_priority", {"exclude_pids": exclude_pids})
-                    results.append("Background Deprioritization requested via Sentinel")
-                except ImportError:
-                    pass
-                try:
-                    from services.benchmark_logger import get_history_service
-                    get_history_service().record_optimization(f"Deprioritized {res['lowered']} Background Apps")
-                except Exception:
-                    pass
+                    res = SentinelService.get_instance().request_intervention("lower_background_priority", {"exclude_pids": exclude_pids})
+                    
+                    if res.get("status") == "applied":
+                        lowered_count = res.get("details", {}).get("lowered", 0) if isinstance(res, dict) else 0
+                        results.append("Background Deprioritization applied")
+                        try:
+                            from services.benchmark_logger import get_history_service
+                            get_history_service().record_optimization(f"Deprioritized {lowered_count} Background Apps")
+                        except Exception:
+                            pass
+                    else:
+                        reason = res.get("reason", "unknown")
+                        results.append(f"Deprioritization {res.get('status')} ({reason})")
+                        log.info(f"AI intervention lower_background_priority was {res.get('status')}: {reason}")
+                except Exception as e:
+                    log.exception("AI intervention failed", extra={"action": "LOWER_BACKGROUND_PROCESS_PRIORITY", "session_id": getattr(self, "session_id", "unknown")})
 
             elif action == "REVIEW_PAGEFILE_SIZE":
                 results.append("Pagefile advisory logged")

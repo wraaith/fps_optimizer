@@ -1,3 +1,4 @@
+from ui.safe_view import SafeViewMixin
 # desktop-app/app/ui/scan_view.py
 
 """
@@ -20,11 +21,12 @@ def _safe(value, suffix: str = "", fallback: str = "Unknown") -> str:
     return f"{value}{suffix}"
 
 
-class ScanView(ctk.CTkFrame):
+class ScanView(SafeViewMixin, ctk.CTkFrame):
     def __init__(self, parent, **kwargs):
         theme = get_theme()
         super().__init__(parent, fg_color=theme["bg_main"], **kwargs)
 
+        self._init_safe_view()
         self._last_data: Optional[Dict[str, Any]] = None
 
         self.grid_columnconfigure(0, weight=1)
@@ -123,19 +125,19 @@ class ScanView(ctk.CTkFrame):
                 # Schedule UI update back on the main thread
                 try:
                     if self.winfo_exists():
-                        self.after(0, self._display_results, data)
+                        self.schedule_ui_callback(0, self._display_results, data)
                 except Exception:
                     pass
             except Exception as e:
                 try:
                     if self.winfo_exists():
-                        self.after(0, self._show_error, str(e))
+                        self.schedule_ui_callback(0, self._show_error, str(e))
                 except Exception:
                     pass
             finally:
                 try:
                     if self.winfo_exists():
-                        self.after(0, lambda: self.scan_btn.configure(
+                        self.schedule_ui_callback(0, lambda: self.scan_btn.configure(
                             state="normal",
                             text="⚡ RUN HARDWARE SCAN" if is_cyber_mode() else "Run Scan"
                         ))
@@ -368,4 +370,4 @@ class ScanView(ctk.CTkFrame):
                 text_color="#ff4d4f"
             ).grid(row=0, column=0, pady=20)
         except Exception:
-            pass
+            pass

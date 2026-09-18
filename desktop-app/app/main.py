@@ -7,10 +7,12 @@ import tkinter as tk
 import faulthandler
 import time
 
-# Ensure app directory is on sys.path for robust relative module imports
+# Ensure app and desktop-app directories are on sys.path for robust relative/absolute imports
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
-if _APP_DIR not in sys.path:
-    sys.path.insert(0, _APP_DIR)
+_DESKTOP_DIR = os.path.dirname(_APP_DIR)
+for _p in (_APP_DIR, _DESKTOP_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 _CRASH_LOG = os.path.join(os.path.dirname(_APP_DIR), "crash.log")
 try:

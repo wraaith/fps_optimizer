@@ -1,3 +1,4 @@
+from ui.safe_view import SafeViewMixin
 import customtkinter as ctk
 import threading
 import time
@@ -28,11 +29,12 @@ from ui.theme_manager import is_cyber_mode, get_theme, get_font, PERFORMANCE_THE
 
 
 
-class OptimizeView(ctk.CTkFrame):
+class OptimizeView(SafeViewMixin, ctk.CTkFrame):
     def __init__(self, parent, **kwargs):
         theme = get_theme()
         super().__init__(parent, fg_color=theme["bg_main"], **kwargs)
         
+        self._init_safe_view()
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)  # The main content area
 
@@ -932,7 +934,7 @@ class OptimizeView(ctk.CTkFrame):
                     ai_stat = self.ai_service.get_status()
                     try:
                         if not self._telemetry_stop.is_set() and self.winfo_exists():
-                            self.after(0, self._update_hud_display, mb, ai_stat)
+                            self.schedule_ui_callback(0, self._update_hud_display, mb, ai_stat)
                     except Exception:
                         pass
                 except Exception:
@@ -946,7 +948,10 @@ class OptimizeView(ctk.CTkFrame):
     def _update_hud_display(self, mb: dict, ai_stat: dict):
         """Render live memory breakdown and scheduler status on the main thread safely."""
         try:
-            if not self.winfo_exists():
+            if getattr(self, "_is_destroyed", False) or not self.winfo_exists():
+                return
+            top = self.winfo_toplevel()
+            if getattr(top, "_ui_suspended", False):
                 return
 
             theme = get_theme()
@@ -984,7 +989,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -995,7 +1000,7 @@ class OptimizeView(ctk.CTkFrame):
                 has_ssd = check_has_ssd()
                 try:
                     if hasattr(self, "_telemetry_stop") and not self._telemetry_stop.is_set() and self.winfo_exists():
-                        self.after(0, self._render_sysmain_chip, sm_status, has_ssd)
+                        self.schedule_ui_callback(0, self._render_sysmain_chip, sm_status, has_ssd)
                 except Exception:
                     pass
             except Exception:
@@ -1211,7 +1216,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -1219,7 +1224,7 @@ class OptimizeView(ctk.CTkFrame):
                 pass
             report = self.ai_service.run_diagnostics()
             try:
-                self.after(0, lambda: self._diag_render(report))
+                self.schedule_ui_callback(0, lambda: self._diag_render(report))
             except Exception:
                 if sync:
                     self._diag_render(report)
@@ -1319,7 +1324,7 @@ class OptimizeView(ctk.CTkFrame):
         """Callback invoked by background watchdog on state changes."""
         try:
             if hasattr(self, "_telemetry_stop") and not self._telemetry_stop.is_set() and self.winfo_exists():
-                self.after(0, self._render_ai_status, data)
+                self.schedule_ui_callback(0, self._render_ai_status, data)
         except Exception:
             pass
 
@@ -1646,7 +1651,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -1654,7 +1659,7 @@ class OptimizeView(ctk.CTkFrame):
                 pass
             procs = get_top_memory_consumers(30)
             try:
-                self.after(0, self._pk_render_procs, procs)
+                self.schedule_ui_callback(0, self._pk_render_procs, procs)
             except Exception:
                 pass
 
@@ -1738,7 +1743,7 @@ class OptimizeView(ctk.CTkFrame):
             try:
                 if self.winfo_exists():
                     try:
-                        self.after(0, self._pk_on_terminate_done, results, ram_before)
+                        self.schedule_ui_callback(0, self._pk_on_terminate_done, results, ram_before)
                     except RuntimeError:
                         self._pk_on_terminate_done(results, ram_before)
             except Exception:
@@ -1790,7 +1795,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -1812,7 +1817,7 @@ class OptimizeView(ctk.CTkFrame):
             time.sleep(0.5)
             try:
                 if self.winfo_exists():
-                    self.after(0, self._on_smart_boost_complete,
+                    self.schedule_ui_callback(0, self._on_smart_boost_complete,
                                standby_result, trim_result, ram_before)
             except Exception:
                 pass
@@ -1874,7 +1879,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -1883,7 +1888,7 @@ class OptimizeView(ctk.CTkFrame):
             result = stabilize_network()
             try:
                 if self.winfo_exists():
-                    self.after(0, _done, result)
+                    self.schedule_ui_callback(0, _done, result)
             except Exception:
                 pass
 
@@ -2134,7 +2139,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -2142,7 +2147,7 @@ class OptimizeView(ctk.CTkFrame):
                 pass
             res = action_fn()
             try:
-                self.after(0, _done, res)
+                self.schedule_ui_callback(0, _done, res)
             except Exception:
                 try:
                     _done(res)
@@ -2173,7 +2178,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -2181,7 +2186,7 @@ class OptimizeView(ctk.CTkFrame):
                 pass
             info = get_network_status()
             try:
-                self.after(0, self._net_render_status, info)
+                self.schedule_ui_callback(0, self._net_render_status, info)
             except Exception:
                 if sync:
                     self._net_render_status(info)
@@ -2346,7 +2351,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -2355,7 +2360,7 @@ class OptimizeView(ctk.CTkFrame):
             sm_status = get_sysmain_status()
             has_ssd = check_has_ssd()
             try:
-                self.after(0, self._sm_render_status, sm_status, has_ssd)
+                self.schedule_ui_callback(0, self._sm_render_status, sm_status, has_ssd)
             except Exception:
                 if sync:
                     self._sm_render_status(sm_status, has_ssd)
@@ -2428,7 +2433,7 @@ class OptimizeView(ctk.CTkFrame):
                 from sentinel.service import SentinelService
                 if SentinelService.get_instance().is_running():
                     try:
-                        self.after(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
+                        self.schedule_ui_callback(0, lambda: hasattr(self, 'tweak_feed') and self.tweak_feed.configure(text='Unavailable while Sentinel is active', text_color='#f43f5e'))
                     except Exception:
                         pass
                     return
@@ -2437,7 +2442,7 @@ class OptimizeView(ctk.CTkFrame):
             res = set_sysmain_enabled(enable)
             time.sleep(0.5)
             try:
-                self.after(0, self._sm_on_toggle_done, res, enable)
+                self.schedule_ui_callback(0, self._sm_on_toggle_done, res, enable)
             except Exception:
                 try:
                     self._sm_on_toggle_done(res, enable)
@@ -2468,5 +2473,4 @@ class OptimizeView(ctk.CTkFrame):
         self._update_ram_label()
         self._init_sysmain_status()
         self._sm_check_status()
-
 

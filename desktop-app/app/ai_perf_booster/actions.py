@@ -18,17 +18,25 @@ IS_WINDOWS = platform.system() == "Windows"
 EMPTY_STANDBY_TOOL = os.path.join(os.path.dirname(__file__), "EmptyStandbyList.exe")
 
 def clear_standby_memory():
-    """Calls EmptyStandbyList.exe (must be downloaded separately) to release
-    Windows standby/cached RAM. This never touches running processes."""
+    """Calls native Windows NtSetSystemInformation (or EmptyStandbyList.exe fallback)
+    to release Windows standby/cached RAM. This never touches running processes."""
     if not IS_WINDOWS:
         log.info("Standby memory clearing is Windows-only. Skipped.")
         return False
+    try:
+        from optimize.optimizer_service import clear_standby_memory as opt_clear
+        res = opt_clear()
+        if res.get("success"):
+            log.info(f"Standby memory list cleared via native NtSetSystemInformation (freed {res.get('freed_mb', 0)}MB).")
+            return True
+    except Exception:
+        pass
     if not os.path.exists(EMPTY_STANDBY_TOOL):
-        log.warning("EmptyStandbyList.exe not found. Download from Sysinternals/CodePlex mirror and place next to this script.")
+        log.warning("EmptyStandbyList.exe not found and native privilege failed.")
         return False
     try:
         subprocess.run([EMPTY_STANDBY_TOOL, "workingsets"], check=True, timeout=15)
-        log.info("Standby memory list cleared.")
+        log.info("Standby memory list cleared via EmptyStandbyList.exe.")
         return True
     except Exception as e:
         log.error(f"Failed to clear standby memory: {e}")
@@ -91,11 +99,38 @@ def trim_working_sets_safe():
     log.info(f"Requested working-set trim for {len(trimmed)} processes (no process ended).")
     return trimmed
 
+
+def trim_all_working_sets(exclude_pids=None):
+    """Wrapper around working set trimming accepting optional exclude_pids."""
+    if not IS_WINDOWS:
+        return []
+    import ctypes
+    exclude = set(exclude_pids or [])
+    trimmed = []
+    PROCESS_QUERY_INFORMATION = 0x0400
+    PROCESS_SET_QUOTA = 0x0100
+    for p in psutil.process_iter(['pid', 'name']):
+        try:
+            pid = p.info['pid']
+            if pid in (0, 4) or pid in exclude:
+                continue
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, pid)
+            if handle:
+                ctypes.windll.kernel32.SetProcessWorkingSetSize(handle, -1, -1)
+                ctypes.windll.kernel32.CloseHandle(handle)
+                trimmed.append(pid)
+        except Exception:
+            continue
+    log.info(f"Requested working-set trim for {len(trimmed)} processes (no process ended).")
+    return trimmed
+
 ACTION_MAP = {
     "CLEAR_STANDBY_MEMORY": clear_standby_memory,
     "LOWER_BACKGROUND_PROCESS_PRIORITY": lower_background_priority,
     "REVIEW_PAGEFILE_SIZE": review_pagefile_size,
     "TRIM_WORKING_SETS": trim_working_sets_safe,
+    "TRIM_ALL_WORKING_SETS": trim_all_working_sets,
 }
 
 def execute(action_names):

@@ -29,7 +29,13 @@ PERFORMANCE_THEME: Dict[str, Any] = {
     "bg_main": "#050505",
     "bg_card": "#0a0a0a",
     "bg_card_inner": "#121212",
+    "bg_glass": "#1a1a1a",
     "border_card": "#1e1e1e",
+    "border_glow": "#1e1e1e",
+    "border_purple": "#1e1e1e",
+    "border_pink": "#1e1e1e",
+    "border_green": "#1e1e1e",
+    "border_amber": "#1e1e1e",
     "border_width": 0,
     "corner_radius": 8,
     # Text
@@ -45,6 +51,7 @@ PERFORMANCE_THEME: Dict[str, Any] = {
     "accent_purple": "#cccccc",
     "accent_green": "#00ff00",
     "accent_amber": "#ffffff",
+    "accent_crimson": "#cc3333",
     # Buttons
     "nav_btn_fg": "transparent",
     "nav_btn_hover": "#1a1a1a",
@@ -105,7 +112,8 @@ CYBER_THEME: Dict[str, Any] = {
 }
 
 
-_font_cache: Dict[tuple, ctk.CTkFont] = {}
+_perf_font_cache: Dict[tuple, ctk.CTkFont] = {}
+_cyber_font_cache: Dict[tuple, ctk.CTkFont] = {}
 
 
 def is_cyber_mode() -> bool:
@@ -118,7 +126,7 @@ def set_cyber_mode(enabled: bool) -> None:
     global _cyber_mode
     if _cyber_mode != enabled:
         _cyber_mode = enabled
-        _font_cache.clear()  # Font family changes between modes
+        # No cache clear needed — each mode has its own cache
         _notify_listeners()
 
 
@@ -132,9 +140,10 @@ def get_font(size: int = 14, weight: str = "bold", is_stat: bool = False) -> ctk
     theme = get_theme()
     family = theme["font_family_stat"] if is_stat else theme["font_family"]
     key = (family, size, weight)
-    if key not in _font_cache:
-        _font_cache[key] = ctk.CTkFont(family=family, size=size, weight=weight)
-    return _font_cache[key]
+    cache = _cyber_font_cache if _cyber_mode else _perf_font_cache
+    if key not in cache:
+        cache[key] = ctk.CTkFont(family=family, size=size, weight=weight)
+    return cache[key]
 
 
 def on_theme_changed(listener: Callable[[bool], None]) -> None:
@@ -143,9 +152,26 @@ def on_theme_changed(listener: Callable[[bool], None]) -> None:
         _listeners.append(listener)
 
 
+def remove_theme_listener(listener: Callable[[bool], None]) -> None:
+    """Unregister a mode-change callback to prevent memory leaks and stale callbacks."""
+    if listener in _listeners:
+        _listeners.remove(listener)
+
+
 def _notify_listeners() -> None:
-    for listener in _listeners:
+    dead_listeners = []
+    # Use a tuple to take a robust snapshot, avoiding mutation during iteration
+    for listener in tuple(_listeners):
         try:
+            # If the listener is a bound method of a Tkinter widget that has been destroyed, skip & prune
+            bound_self = getattr(listener, "__self__", None)
+            if bound_self is not None and hasattr(bound_self, "winfo_exists"):
+                if not bound_self.winfo_exists():
+                    dead_listeners.append(listener)
+                    continue
             listener(_cyber_mode)
         except Exception:
-            pass
+            dead_listeners.append(listener)
+
+    for dead in dead_listeners:
+        remove_theme_listener(dead)

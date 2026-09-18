@@ -280,6 +280,30 @@ class SnapshotManager:
         """
         return [c for c in self.get_change_log() if c.get("status") in (STATUS_APPLIED, STATUS_VERIFIED)]
 
+    def record_change(self, change: Dict[str, Any]) -> str:
+        """Convenience method to record a change dictionary into the audit ledger."""
+        category = change.get("category", "general")
+        setting_name = change.get("setting", change.get("category", "general"))
+        target = change.get("target", "System")
+        old_value = change.get("old_value")
+        new_value = change.get("new_value")
+        old_mode = change.get("old_mode")
+        reboot_required = change.get("reboot_required", False)
+        status = change.get("status", STATUS_APPLIED)
+        verification_status = change.get("verification_status", "unverified")
+
+        return self.log_change(
+            category=category,
+            setting_name=setting_name,
+            old_value=old_value,
+            new_value=new_value,
+            target=target,
+            old_mode=old_mode,
+            reboot_required=reboot_required,
+            status=status,
+            verification_status=verification_status
+        )
+
     def log_change(
         self,
         category: str,

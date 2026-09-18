@@ -51,6 +51,11 @@ class TimerManager:
                 return True
         return False
 
+    @property
+    def is_active(self) -> bool:
+        """Alias for owns_timer."""
+        return self.owns_timer
+
     def get_state(self) -> dict:
         """Expose timer ownership state for diagnostics and snapshot ledger."""
         return {

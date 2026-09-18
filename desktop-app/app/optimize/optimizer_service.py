@@ -6,35 +6,15 @@ import functools
 import psutil
 from typing import Optional, Dict, Any
 
-SYSTEM_PROCESSES = {
-    "system", "system idle process", "registry", "smss.exe", 
-    "csrss.exe", "wininit.exe", "services.exe", "lsass.exe", 
-    "svchost.exe", "fontdrvhost.exe", "dwm.exe", "explorer.exe", 
-    "taskhostw.exe", "winlogon.exe", "sihost.exe", "conhost.exe",
-    "spoolsv.exe", "searchindexer.exe", "wudfhost.exe", 
-    "nvdisplay.container.exe", "securityhealthservice.exe", "ctfmon.exe",
-    "memory compression", "dashost.exe", "dllhost.exe",
-    "rundll32.exe", "runtimebroker.exe", "searchapp.exe",
-    "startmenuexperiencehost.exe", "applicationframehost.exe",
-    "audiodg.exe", "shellexperiencehost.exe", "searchhost.exe",
-    # Anti-cheat services & security daemons (Strictly Untouched)
-    "vgc.exe", "vgtray.exe", "riotclientservices.exe",
-    "easyanticheat.exe", "easyanticheat_eos.exe",
-    "beservice.exe", "battleye.exe"
-}
+from sentinel.game_detection_config import (
+    SYSTEM_PROCESSES as _SYSTEM_PROCESSES_FROZEN,
+    NON_GAME_BLACKLIST,
+    BLOATWARE_PROCESSES as _BLOATWARE_FROZEN,
+)
 
-BLOATWARE_PROCESSES = {
-    "chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", 
-    "onedrive.exe", "epicgameslauncher.exe", "ccleaner64.exe", 
-    "ccleaner.exe", "adobeipcbroker.exe", "creative cloud.exe", 
-    "phoneexperiencehost.exe", "yourphone.exe", "skype.exe", 
-    "teams.exe", "zoom.exe", "webex.exe", "slack.exe", "spotify.exe",
-    # Extra bloatware common on low-end systems
-    "updateassistant.exe", "searchprotocolhost.exe",
-    "microsoftedgeupdate.exe", "googlechromeservice.exe",
-    "gamingservices.exe", "gamingservicesnet.exe",
-    "dropbox.exe", "googledrivesync.exe", "jusched.exe",
-}
+# Mutable sets for backward compatibility with any code that mutates these
+SYSTEM_PROCESSES = set(_SYSTEM_PROCESSES_FROZEN)
+BLOATWARE_PROCESSES = set(_BLOATWARE_FROZEN)
 
 def get_current_available_ram_mb() -> float:
     """Returns the current available RAM in MB."""
@@ -574,27 +554,28 @@ def disable_high_resolution_timer(resolution_ms: int = 1) -> bool:
 def get_foreground_game_process() -> Optional[dict]:
     """
     Detects if the current active foreground window belongs to a game or 3D app.
-    Excludes desktop, explorer, browsers, development tools, and background utilities.
+    Delegates to the 3-tier Universal Game Detection Protocol.
     Returns {"pid": int, "name": str, "title": str} or None.
     """
     try:
-        user32 = ctypes.windll.user32
-        user32.GetForegroundWindow.argtypes = []
-        user32.GetForegroundWindow.restype = wintypes.HWND
-        user32.IsWindowVisible.argtypes = [wintypes.HWND]
-        user32.IsWindowVisible.restype = wintypes.BOOL
-        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-        user32.GetWindowTextLengthW.restype = ctypes.c_int
-        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-        user32.GetWindowTextW.restype = ctypes.c_int
+        from sentinel.game_detection import get_foreground_game_process as _detect
+        return _detect()
+    except ImportError:
+        # Fallback if game_detection module is unavailable
+        return _legacy_get_foreground_game_process()
+    except Exception:
+        return None
 
+
+def _legacy_get_foreground_game_process() -> Optional[dict]:
+    """Legacy fallback detection if the new module can't be imported."""
+    try:
+        user32 = ctypes.windll.user32
         hwnd = user32.GetForegroundWindow()
         if not hwnd or not user32.IsWindowVisible(hwnd):
             return None
 
-        pid = wintypes.DWORD()
+        pid = ctypes.wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if not pid.value or pid.value <= 4 or pid.value == os.getpid():
             return None
@@ -609,24 +590,10 @@ def get_foreground_game_process() -> Optional[dict]:
         proc = psutil.Process(pid.value)
         proc_name = (proc.name() or "").lower()
 
-        # Filter out common desktop utilities, IDEs, browsers and system apps
-        NON_GAME_EXES = {
-            "explorer.exe", "taskmgr.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
-            "code.exe", "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe",
-            "devenv.exe", "python.exe", "pythonw.exe", "shellexperiencehost.exe",
-            "searchhost.exe", "startmenuexperiencehost.exe", "applicationframehost.exe",
-            "lockapp.exe", "notepad.exe", "calculator.exe", "slack.exe", "teams.exe",
-            "discord.exe", "spotify.exe", "sublime_text.exe"
-        }
-
-        if proc_name in NON_GAME_EXES or proc_name in SYSTEM_PROCESSES:
+        if proc_name in NON_GAME_BLACKLIST or proc_name in SYSTEM_PROCESSES:
             return None
 
-        return {
-            "pid": pid.value,
-            "name": proc.name(),
-            "title": title,
-        }
+        return {"pid": pid.value, "name": proc.name(), "title": title}
     except Exception:
         return None
 

@@ -26,8 +26,242 @@ import time
 from typing import Any, Dict, Optional
 
 import psutil
+from dataclasses import dataclass
+from enum import Enum
+import numpy as np
 
 from .gpu_monitor import GPUBackend, create_gpu_backend
+
+class TelemetryState(Enum):
+    WAITING_FOR_GAME = "No supported game detected"
+    ATTACHING = "Connecting to game telemetry"
+    COLLECTING_FRAMES = "Measuring FPS…"
+    FPS_READY = "FPS: <measured value>"
+    STALE = "FPS unavailable"
+    ERROR = "Frame telemetry unavailable"
+
+@dataclass
+class TelemetryConfig:
+    FPS_WINDOW_SECONDS: float = 2.0
+    MIN_VALID_FRAMES: int = 10
+    MIN_ELAPSED_SECONDS: float = 0.5
+    STALE_TIMEOUT_SECONDS: float = 2.0
+
+@dataclass
+class GameProcessIdentity:
+    game_id: str
+    pid: int
+    executable_name: str
+    verified_executable_path: bool
+    process_start_time: float
+    session_id: str
+
+class FrameTelemetryEngine:
+    def __init__(self, config: TelemetryConfig = None):
+        self.lock = threading.Lock()
+        self.config = config or TelemetryConfig()
+        self.identity: Optional[GameProcessIdentity] = None
+        self.reset()
+        
+    def reset(self):
+        with self.lock:
+            self.identity = None
+            
+            # Use a deque to store (present_start, ms_between)
+            self.frame_samples = collections.deque(maxlen=600)
+            self.last_present_start = 0.0
+            
+            self.state = TelemetryState.WAITING_FOR_GAME
+            self.fps = None
+            self.p50 = None
+            self.p95 = None
+            self.p99 = None
+            
+    def _is_valid_identity(self, pid: int) -> bool:
+        if self.identity is None or self.identity.pid != pid:
+            return False
+            
+        # Verify the process is still alive and the start time hasn't changed (PID reuse)
+        try:
+            p = psutil.Process(pid)
+            if not p.is_running():
+                return False
+            if p.create_time() != self.identity.process_start_time:
+                return False
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return False
+            
+        return True
+
+    def set_target_game(self, game_id: str, executable: str, pid: int):
+        with self.lock:
+            try:
+                p = psutil.Process(pid)
+                create_time = p.create_time()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                return # Can't bind to dead/inaccessible process
+                
+            if self.identity is None or self.identity.pid != pid or self.identity.process_start_time != create_time:
+                self.identity = GameProcessIdentity(
+                    game_id=game_id,
+                    pid=pid,
+                    executable_name=executable,
+                    verified_executable_path=True,
+                    process_start_time=create_time,
+                    session_id=f"sess_{int(time.time())}_{pid}"
+                )
+                self.frame_samples.clear()
+                self.last_present_start = 0.0
+                self.fps = None
+                self.p50 = self.p95 = self.p99 = None
+                self.state = TelemetryState.ATTACHING
+
+    def mark_game_exit(self):
+        with self.lock:
+            self.identity = None
+            self.frame_samples.clear()
+            self.fps = None
+            self.p50 = self.p95 = self.p99 = None
+            self.state = TelemetryState.WAITING_FOR_GAME
+
+    def mark_error(self):
+        with self.lock:
+            self.frame_samples.clear()
+            self.fps = None
+            self.p50 = self.p95 = self.p99 = None
+            self.state = TelemetryState.ERROR
+
+    def process_frame(self, pid: int, executable: str, ms_between: float, present_start: float):
+        with self.lock:
+            if not self._is_valid_identity(pid):
+                return # Discard: Not the target process, dead process, or PID reused
+                
+            if ms_between is None or np.isnan(ms_between) or np.isinf(ms_between) or ms_between <= 0:
+                return # Discard: Invalid duration
+                
+            if present_start is None or np.isnan(present_start) or np.isinf(present_start):
+                return # Discard: Invalid timestamp
+                
+            if present_start <= self.last_present_start:
+                return # Discard: Duplicate or non-monotonic timestamp
+                
+            # Discontinuity check
+            if present_start - self.last_present_start > self.config.FPS_WINDOW_SECONDS:
+                self.frame_samples.clear()
+                self.fps = None
+                self.p50 = self.p95 = self.p99 = None
+                self.state = TelemetryState.COLLECTING_FRAMES
+                
+            self.last_present_start = present_start
+            
+            current_time = time.time()
+            self._prune_samples(current_time)
+            
+            self.frame_samples.append((present_start, ms_between))
+            self._update_metrics(current_time)
+
+    def _prune_samples(self, current_time: float):
+        # We prune based on present_start relative to the latest present_start, 
+        # but since we compare current_time we assume present_start is comparable to time.time().
+        # Actually, PresentMon TimeInSeconds is system uptime or QPC based.
+        # Since we use elapsed time between samples, let's prune based on the latest sample's timestamp
+        if not self.frame_samples:
+            return
+            
+        latest_ts = self.frame_samples[-1][0]
+        while self.frame_samples and (latest_ts - self.frame_samples[0][0] > self.config.FPS_WINDOW_SECONDS):
+            self.frame_samples.popleft()
+
+    def _update_metrics(self, current_time: float):
+        if not self.frame_samples:
+            self.fps = None
+            self.p50 = self.p95 = self.p99 = None
+            if self.identity is not None:
+                self.state = TelemetryState.STALE
+            else:
+                self.state = TelemetryState.WAITING_FOR_GAME
+            return
+            
+        # We also need a freshness check relative to real wall clock time.
+        # PresentMon events come in. If the last event came in > STALE_TIMEOUT_SECONDS ago, it's stale.
+        # We don't have the exact wall-clock time of the frame, but we can track when we last processed a frame.
+        # However, to be strict, if `current_time` (which is wall clock) advances too much since the last frame was processed, it's stale.
+        # For simplicity, we just use the caller's periodic check in `get_state()` with `current_time` and a last_processed_wall_time.
+        pass
+
+    def get_state(self, current_wall_time: float = None, last_processed_wall_time: float = None) -> dict:
+        with self.lock:
+            if current_wall_time is None:
+                current_wall_time = time.time()
+                
+            if self.identity is None:
+                self.state = TelemetryState.WAITING_FOR_GAME
+                self.fps = None
+            elif self.state == TelemetryState.ERROR:
+                self.fps = None
+                self.p50 = self.p95 = self.p99 = None
+            elif last_processed_wall_time is not None and (current_wall_time - last_processed_wall_time > self.config.STALE_TIMEOUT_SECONDS):
+                self.state = TelemetryState.STALE
+                self.fps = None
+                self.p50 = self.p95 = self.p99 = None
+            elif len(self.frame_samples) == 0:
+                if self.state not in (TelemetryState.ATTACHING, TelemetryState.ERROR):
+                    self.state = TelemetryState.COLLECTING_FRAMES
+                self.fps = None
+                self.p50 = self.p95 = self.p99 = None
+            elif len(self.frame_samples) < self.config.MIN_VALID_FRAMES:
+                self.state = TelemetryState.COLLECTING_FRAMES
+                self.fps = None
+                self.p50 = self.p95 = self.p99 = None
+            else:
+                latest_ts = self.frame_samples[-1][0]
+                first_ts = self.frame_samples[0][0]
+                elapsed = latest_ts - first_ts
+                
+                if elapsed < self.config.MIN_ELAPSED_SECONDS:
+                    self.state = TelemetryState.COLLECTING_FRAMES
+                    self.fps = None
+                else:
+                    self.fps = round(len(self.frame_samples) / elapsed, 1)
+                    ms_values = [s[1] for s in self.frame_samples]
+                    try:
+                        self.p50 = round(float(np.percentile(ms_values, 50)), 2)
+                        self.p95 = round(float(np.percentile(ms_values, 95)), 2)
+                        self.p99 = round(float(np.percentile(ms_values, 99)), 2)
+                    except Exception:
+                        self.p50 = self.p95 = self.p99 = None
+                    self.state = TelemetryState.FPS_READY
+            
+            fps_confidence = "unavailable"
+            if self.state == TelemetryState.FPS_READY and self.fps is not None:
+                fps_confidence = "measured"
+                
+            ui_text = self.state.value
+            if fps_confidence == "measured":
+                ui_text = f"FPS: {self.fps}"
+                
+            pid = self.identity.pid if self.identity else None
+            executable = self.identity.executable_name if self.identity else None
+            game_id = self.identity.game_id if self.identity else None
+                
+            return {
+                "game_id": game_id,
+                "pid": pid,
+                "executable_name": executable,
+                "executable_path_verified": True if pid else False,
+                "frame_source": "PresentMon" if pid else None,
+                "frame_source_status": self.state.name.lower(),
+                "fps_state": self.state.name,
+                "valid_frame_samples": len(self.frame_samples),
+                "fps": self.fps,
+                "frame_time_p50_ms": self.p50,
+                "frame_time_p95_ms": self.p95,
+                "frame_time_p99_ms": self.p99,
+                "fps_confidence": fps_confidence,
+                "reason": self.state.name,
+                "ui_fps_text": ui_text
+            }
+
 
 
 # ── CPU temperature helpers ─────────────────────────────────────
@@ -260,12 +494,12 @@ class MetricsCollector:
         self._pm_thread: Optional[threading.Thread] = None
         self._pm_stop_event = threading.Event()
 
-        self._current_fps: Optional[float] = None
-        self._last_fps_time: float = 0.0
         self._current_cpu_w: Optional[float] = None
         self._current_gpu_w: Optional[float] = None
-        self._frametimes = collections.deque()
 
+        self._telemetry_engine = FrameTelemetryEngine()
+        self._last_processed_wall_time = 0.0
+        
         self._presentmon_started = False
         
         self._consumers = 0
@@ -428,20 +662,30 @@ class MetricsCollector:
             reader.join(timeout=2.0)
         self._pm_thread = None
 
-    _IGNORED_APPS = frozenset({
-        "dwm.exe", "explorer.exe", "unknown", "desktop window manager",
-        "python.exe", "pythonw.exe", "fps_optimizer.exe", "chrome.exe",
-        "msedge.exe", "firefox.exe", "brave.exe", "discord.exe",
-        "spotify.exe", "code.exe", "devenv.exe", "cmd.exe",
-        "powershell.exe", "pwsh.exe", "taskmgr.exe", "shellexperiencehost.exe",
-        "searchhost.exe", "startmenuexperiencehost.exe", "applicationframehost.exe",
-        "lockapp.exe", "notepad.exe", "calculator.exe", "slack.exe",
-        "teams.exe", "steamwebhelper.exe",
-    })
+    _IGNORED_APPS = None  # Loaded dynamically from config
+
+    @classmethod
+    def _get_ignored_apps(cls):
+        if cls._IGNORED_APPS is None:
+            try:
+                from sentinel.game_detection_config import NON_GAME_BLACKLIST, SYSTEM_PROCESSES
+                cls._IGNORED_APPS = NON_GAME_BLACKLIST | SYSTEM_PROCESSES
+            except ImportError:
+                cls._IGNORED_APPS = frozenset({
+                    "dwm.exe", "explorer.exe", "unknown", "desktop window manager",
+                    "python.exe", "pythonw.exe", "fps_optimizer.exe", "chrome.exe",
+                    "msedge.exe", "firefox.exe", "brave.exe", "discord.exe",
+                    "spotify.exe", "code.exe", "devenv.exe", "cmd.exe",
+                    "powershell.exe", "pwsh.exe", "taskmgr.exe", "shellexperiencehost.exe",
+                    "searchhost.exe", "startmenuexperiencehost.exe", "applicationframehost.exe",
+                    "lockapp.exe", "notepad.exe", "calculator.exe", "slack.exe",
+                    "teams.exe", "steamwebhelper.exe",
+                })
+        return cls._IGNORED_APPS
 
     def _is_target_application(self, application: str) -> bool:
         application = application.strip().lower()
-        if not application or application in self._IGNORED_APPS:
+        if not application or application in self._get_ignored_apps():
             return False
         if not self._target_process:
             return True
@@ -449,6 +693,16 @@ class MetricsCollector:
             application == self._target_process
             or os.path.basename(application) == self._target_process
         )
+        
+    def _find_pid_for_process(self, application: str) -> Optional[int]:
+        if not application: return None
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if proc.info['name'].lower() == application.lower():
+                    return proc.info['pid']
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        return None
 
     def _read_presentmon_output(self) -> None:
         process = self._pm_process
@@ -483,41 +737,65 @@ class MetricsCollector:
                 row = dict(zip(headers, cleaned_fields))
                 norm_row = {_normalise_header(k): v.strip() for k, v in row.items() if k is not None}
                 application = _find_column(norm_row, "Application", "ApplicationName", "ProcessName")
-
+                pid_str = _find_column(norm_row, "ProcessId", "ProcessID")
+                
                 if not self._is_target_application(application or ""):
                     continue
+                    
+                pid = None
+                try:
+                    pid = int(pid_str) if pid_str else None
+                except ValueError:
+                    pass
 
-                ms_between = _find_column(norm_row, "MsBetweenPresents", "MsBetweenPresent")
-                milliseconds = _parse_float(ms_between)
+                if pid is None:
+                    continue
+                    
+                # Bind telemetry engine to this process
+                current_state = self._telemetry_engine.get_state()
+                if current_state["pid"] != pid:
+                    self._telemetry_engine.set_target_game(
+                        game_id=self._target_process or application or "Game",
+                        executable=application or "Unknown.exe",
+                        pid=pid
+                    )
 
-                if milliseconds is not None and 0.5 <= milliseconds <= 1000.0:
-                    now = time.time()
-                    with self._lock:
-                        self._frametimes.append((now, milliseconds))
-                        while self._frametimes and (now - self._frametimes[0][0] > 0.75):
-                            self._frametimes.popleft()
+                ms_between_str = _find_column(norm_row, "MsBetweenPresents", "MsBetweenPresent")
+                present_start_str = _find_column(norm_row, "PresentStartTime", "PresentStart", "TimeInSeconds")
+                ms_until_render_complete_str = _find_column(norm_row, "MsUntilRenderComplete")
+                ms_until_displayed_str = _find_column(norm_row, "MsUntilDisplayed")
+                
+                # Check for completely missing required fields
+                if not ms_between_str or not present_start_str:
+                    self._telemetry_engine.mark_error()
+                    continue
+                
+                ms_between = _parse_float(ms_between_str)
+                present_start = _parse_float(present_start_str)
 
-                        if self._frametimes:
-                            total_ms = sum(ft[1] for ft in self._frametimes)
-                            if total_ms > 0:
-                                fps = (len(self._frametimes) * 1000.0) / total_ms
-                                self._current_fps = round(min(1000.0, max(1.0, fps)), 1)
-                                self._last_fps_time = now
-
-                    try:
-                        from services.benchmark_logger import get_history_service, write_live_fps
-                        hs = get_history_service()
-                        if hs.is_session_active and hs.is_sentinel_running():
-                            hs.record_fps_sample(self._current_fps)
-                        low_1pct = round(self._current_fps * 0.85, 1)
-                        write_live_fps({
-                            "fps": self._current_fps,
-                            "low_1pct": low_1pct,
-                            "game": application or "Game",
-                            "timestamp": now,
-                        })
-                    except Exception:
-                        pass
+                # Ensure values aren't parsed to null/malformed.
+                if ms_between is not None and present_start is not None:
+                    self._telemetry_engine.process_frame(
+                        pid=pid,
+                        executable=application,
+                        ms_between=ms_between,
+                        present_start=present_start
+                    )
+                    self._last_processed_wall_time = time.time()
+                    
+                    state = self._telemetry_engine.get_state(current_wall_time=time.time(), last_processed_wall_time=self._last_processed_wall_time)
+                    if state["fps_confidence"] == "measured":
+                        try:
+                            from services.benchmark_logger import get_history_service, write_live_fps
+                            hs = get_history_service()
+                            if hs.is_session_active and hs.is_sentinel_running():
+                                hs.record_fps_sample(state["fps"])
+                            low_1pct = round(state["fps"] * 0.85, 1) # simple fallback
+                            write_live_fps(state)
+                        except Exception:
+                            pass
+                else:
+                    self._telemetry_engine.mark_error()
 
                 cpu_power = _find_column(norm_row, "CpuPowerW", "CPU Power (W)", "CpuPower", "CPU Power")
                 parsed_cpu_power = _parse_float(cpu_power)
@@ -577,17 +855,16 @@ class MetricsCollector:
                 try:
                     from services.benchmark_logger import read_live_fps
                     ipc_data = read_live_fps()
-                    if ipc_data and (time.time() - ipc_data.get("timestamp", 0) < 2.5):
-                        with self._lock:
-                            self._current_fps = ipc_data.get("fps")
-                            self._last_fps_time = time.time()
+                    # We no longer read live fps backward into MetricsCollector here, 
+                    # as FrameTelemetryEngine is the source of truth for the local instance.
                 except Exception:
                     pass
 
                 with self._lock:
-                    if self._last_fps_time and (time.time() - self._last_fps_time > 2.5):
-                        self._current_fps = None
-                    data["fps"] = self._current_fps
+                    telemetry_state = self._telemetry_engine.get_state(current_wall_time=time.time(), last_processed_wall_time=self._last_processed_wall_time)
+                    data["fps"] = telemetry_state.get("ui_fps_text")
+                    data["raw_fps"] = telemetry_state.get("fps")
+                    data["telemetry"] = telemetry_state
                     data["cpu_power_w"] = self._current_cpu_w
                     data["gpu_power_w"] = self._current_gpu_w
                     data["timestamp"] = time.time()

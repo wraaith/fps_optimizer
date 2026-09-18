@@ -19,6 +19,26 @@ try:
 except ImportError:
     pythoncom = None
 
+
+def _init_com() -> bool:
+    """Initialize COM apartment on the current thread if pythoncom is available."""
+    if pythoncom is not None:
+        try:
+            pythoncom.CoInitialize()
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def _uninit_com(initialized: bool) -> None:
+    """Uninitialize COM apartment if previously initialized."""
+    if initialized and pythoncom is not None:
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
 # Optional imports — gracefully degrade if missing
 try:
     import wmi as _wmi_mod
@@ -73,6 +93,7 @@ def get_live_cpu_power_wmi() -> Optional[float]:
     if _wmi_mod is None:
         return None
 
+    co_inited = _init_com()
     try:
         w = _wmi_mod.WMI(namespace="root\\OpenHardwareMonitor")
         sensors = w.Sensor()
@@ -86,6 +107,8 @@ def get_live_cpu_power_wmi() -> Optional[float]:
         return val
     except Exception:
         return None
+    finally:
+        _uninit_com(co_inited)
 
 
 # ── GPU helpers ─────────────────────────────────────────────────
@@ -211,6 +234,7 @@ def _get_gpu_info() -> Dict[str, Any]:
 
     # Step 2: WMI fallback ONLY if registry found zero adapters
     if (not name or name == "Unknown") and _wmi_mod is not None:
+        co_inited = _init_com()
         try:
             c = _wmi_mod.WMI()
             gpus = c.Win32_VideoController()
@@ -234,6 +258,8 @@ def _get_gpu_info() -> Dict[str, Any]:
             del c
         except Exception:
             pass
+        finally:
+            _uninit_com(co_inited)
 
     # Step 3: Exact VRAM detection via nvidia-smi (most accurate for NVIDIA)
     exact_vram = _get_nvidia_smi_vram(name)

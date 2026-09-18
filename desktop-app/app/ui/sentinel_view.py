@@ -1,3 +1,4 @@
+from ui.safe_view import SafeViewMixin
 import os
 import json
 import csv
@@ -8,7 +9,7 @@ import customtkinter as ctk
 from .theme_manager import get_theme, is_cyber_mode, get_font
 from sentinel.models import SentinelMode, SentinelState
 
-class SentinelView(ctk.CTkFrame):
+class SentinelView(SafeViewMixin, ctk.CTkFrame):
     """
     Unified UI view for the Universal AI Game Sentinel.
     Provides complete observability, live diagnostics, metrics health,
@@ -18,6 +19,7 @@ class SentinelView(ctk.CTkFrame):
     
     def __init__(self, master: Any, service: Any = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
+        self._init_safe_view()
         if service is None:
             from sentinel.service import SentinelService
             self.service = SentinelService.get_instance()
@@ -33,7 +35,7 @@ class SentinelView(ctk.CTkFrame):
         self.refresh()
         
         # Start periodic UI refresh loop (1s interval)
-        self._after_id = self.after(1000, self._periodic_refresh)
+        self._after_id = self.schedule_ui_callback(1000, self._periodic_refresh)
 
     def _build_ui(self):
         # ── 1. Header & Title ──────────────────────────────────────
@@ -451,7 +453,7 @@ class SentinelView(ctk.CTkFrame):
         except Exception:
             pass
         finally:
-            self._after_id = self.after(1000, self._periodic_refresh)
+            self._after_id = self.schedule_ui_callback(1000, self._periodic_refresh)
 
     def refresh(self):
         """Updates all UI elements from SentinelService telemetry."""
@@ -532,12 +534,18 @@ class SentinelView(ctk.CTkFrame):
 
         # 5. Timeline Textbox
         events = self.service.get_event_timeline()
-        self.timeline_textbox.configure(state="normal")
-        self.timeline_textbox.delete("1.0", "end")
+        new_content_lines = []
         for ev in reversed(events[-50:]):  # Display last 50 in reverse chronological order
             t_str = time.strftime("%H:%M:%S", time.localtime(ev.get("timestamp", 0)))
-            self.timeline_textbox.insert("end", f"[{t_str}] {ev.get('event', '').upper()}: {ev.get('details', '')}\n")
-        self.timeline_textbox.configure(state="disabled")
+            new_content_lines.append(f"[{t_str}] {ev.get('event', '').upper()}: {ev.get('details', '')}\n")
+        
+        new_content_str = "".join(new_content_lines)
+        if getattr(self, "_prev_timeline_content", None) != new_content_str:
+            self.timeline_textbox.configure(state="normal")
+            self.timeline_textbox.delete("1.0", "end")
+            self.timeline_textbox.insert("end", new_content_str)
+            self.timeline_textbox.configure(state="disabled")
+            self._prev_timeline_content = new_content_str
 
         # 6. Snapshots / Ledger Tab
         if debug_info.get("safe_mode"):

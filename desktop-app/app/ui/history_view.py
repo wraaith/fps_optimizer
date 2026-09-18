@@ -1,3 +1,5 @@
+from __future__ import annotations
+from ui.safe_view import SafeViewMixin
 # desktop-app/app/ui/history_view.py
 
 """
@@ -6,7 +8,6 @@ Displays recorded gameplay sessions, FPS gains, 1% low frame pacing,
 and memory optimization metrics. Supports Cyber Mode & Performance Mode.
 """
 
-from __future__ import annotations
 
 import os
 from typing import Any, Dict, List, Optional
@@ -19,13 +20,14 @@ from services.benchmark_logger import get_history_service
 from ui.theme_manager import get_font, get_theme, is_cyber_mode
 
 
-class HistoryView(ctk.CTkFrame):
+class HistoryView(SafeViewMixin, ctk.CTkFrame):
     """Rich telemetry dashboard displaying historical gameplay FPS boost records."""
 
     def __init__(self, parent, **kwargs) -> None:
         theme = get_theme()
         super().__init__(parent, fg_color=theme["bg_main"], **kwargs)
 
+        self._init_safe_view()
         self.history_service = get_history_service()
 
         self.grid_columnconfigure(0, weight=1)

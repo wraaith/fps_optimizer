@@ -27,17 +27,10 @@ from .transparency import apply_transparency, TRANSPARENT_COLOR_KEY
 from .widget_templates import MetricRow, OverlayPanel
 
 # ── DPI awareness ──────────────────────────────────────────────────────
-# Must be called BEFORE any Tk window is created so Windows does not
-# apply bitmap-scaling (the main cause of blurry overlay text).
-try:
-    # Per-Monitor DPI Aware (v2) – best quality on mixed-DPI setups
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    try:
-        # Fallback: System DPI Aware
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
+# NOTE: DPI awareness is set once in main.py before any Tk window.
+# The overlay subprocess inherits the setting via main.py's entry point.
+# Do NOT call SetProcessDpiAwareness here — duplicate calls on mixed-DPI
+# setups can cause scaling drift between the main window and overlay.
 
 # ── Win32 window style constants ─────────────────────────────────────
 GWL_EXSTYLE = -20
@@ -368,8 +361,29 @@ class OverlayWindow(ctk.CTkToplevel):
             data = self.collector.snapshot
             preset = self._theme_engine.current
             panel = self._panel
+            
+            # Retrieve strict validated UI text for FPS, fallback to unavailable if somehow missing
+            telemetry = data.get("telemetry")
+            
+            if not isinstance(telemetry, dict):
+                ui_fps_text = "Frame telemetry unavailable"
+            else:
+                ui_fps_text = telemetry.get("ui_fps_text")
+                fps_confidence = telemetry.get("fps_confidence")
+                raw_fps = telemetry.get("fps")
+                
+                if ui_fps_text is None:
+                    ui_fps_text = "Frame telemetry unavailable"
+                elif fps_confidence == "measured":
+                    import math
+                    if not isinstance(raw_fps, (int, float)) or raw_fps <= 0 or math.isnan(raw_fps) or math.isinf(raw_fps):
+                        ui_fps_text = "Frame telemetry unavailable"
+            
             for widget_key, data_key, suffix in self._METRIC_MAP:
-                panel.set_value(widget_key, _fmt(data.get(data_key), suffix), color=preset.value_color)
+                if widget_key == "fps":
+                    panel.set_value(widget_key, ui_fps_text, color=preset.value_color)
+                else:
+                    panel.set_value(widget_key, _fmt(data.get(data_key), suffix), color=preset.value_color)
 
             # Re-position if the text expansion caused the window to grow (prevents spilling off-screen in horizontal mode)
             current_req_width = self.winfo_reqwidth()

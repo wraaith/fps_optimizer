@@ -152,7 +152,27 @@ class SentinelService:
             self._ai_boost_service._set_state("IDLE", "Game exited.")
 
     def get_active_game_info(self) -> Dict[str, Any]:
-        """Returns detected active game information."""
+        """Returns detected active game information using the 3-tier detection pipeline."""
+        # Primary: 3-tier Universal Game Detection Protocol
+        try:
+            from sentinel.game_detection import detect_active_game
+            result = detect_active_game()
+            if result is not None:
+                return {
+                    "name": result.exe_name,
+                    "exe": result.exe_name,
+                    "pid": result.pid,
+                    "detected": True,
+                    "confidence": result.confidence,
+                    "detection_method": result.detection_method,
+                    "window_mode": result.window_mode,
+                }
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+        # Fallback: legacy foreground window detection
         try:
             from optimize.optimizer_service import get_foreground_game_process
             fg = get_foreground_game_process()
@@ -161,10 +181,15 @@ class SentinelService:
                     "name": fg.get("name") or fg.get("title") or "Unknown Game",
                     "exe": fg.get("exe") or fg.get("name") or "",
                     "pid": fg.get("pid"),
-                    "detected": True
+                    "detected": True,
+                    "confidence": "LEGACY",
+                    "detection_method": "LEGACY_FOREGROUND",
+                    "window_mode": "UNKNOWN",
                 }
         except Exception:
             pass
+
+        # Fallback: AI boost service tracked game
         if self._ai_boost_service and getattr(self._ai_boost_service, "_active_game_pid", None):
             pid = self._ai_boost_service._active_game_pid
             name = getattr(self._ai_boost_service, "_active_game_name", f"PID {pid}")
@@ -172,13 +197,20 @@ class SentinelService:
                 "name": name,
                 "exe": name,
                 "pid": pid,
-                "detected": True
+                "detected": True,
+                "confidence": "LEGACY",
+                "detection_method": "AI_BOOST_FALLBACK",
+                "window_mode": "UNKNOWN",
             }
+
         return {
             "name": "None",
             "exe": "None",
             "pid": None,
-            "detected": False
+            "detected": False,
+            "confidence": None,
+            "detection_method": None,
+            "window_mode": None,
         }
 
     def is_intervention_active(self) -> bool:
@@ -435,7 +467,7 @@ class SentinelService:
             "stop_event_status": "SET" if not self._is_running else "CLEARED",
             "metrics_consumer_count": consumers_count,
             "presentmon_process_status": pm_status,
-            "timer_ownership_state": "ACTIVE (1.0ms)" if getattr(self.timer_manager, "is_active", False) else "INACTIVE",
+            "timer_ownership_state": "ACTIVE (1.0ms)" if (getattr(self.timer_manager, "owns_timer", False) or getattr(self.timer_manager, "is_active", False)) else "INACTIVE",
             "intervention_controller_mode": self.controller.mode.name,
             "blocked_operation_count": self._blocked_operations_count,
             "last_rollback_result": last_rollback or "None",
