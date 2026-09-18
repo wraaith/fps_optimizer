@@ -11,7 +11,6 @@ except ImportError:
     pywinstyles = None
 
 from ui.scan_view import ScanView
-from ui.overlay_settings_view import OverlaySettingsView
 from optimize.optimize_view import OptimizeView
 from ui.history_view import HistoryView
 from ui.network_view import NetworkView
@@ -43,6 +42,31 @@ class MainWindow(ctk.CTk):
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        self._ui_suspended = False
+        self._last_window_state = self.state()
+        self._pending_restore_refresh = None
+        self._resize_job = None
+        self._resize_guard = False
+        self._active_theme = None
+        
+        self.debug_counters = {
+            "configure_events": 0,
+            "debounced_resize_calls": 0,
+            "theme_apply_calls": 0,
+            "font_create_calls": 0,
+            "withdraw_calls": 0,
+            "deiconify_calls": 0,
+            "active_after_jobs": 0,
+            "widget_rebuilds": 0,
+            "periodic_ui_refreshes": 0,
+            "update_calls": 0,
+            "update_idletasks_calls": 0
+        }
+        self._debug_mode = "--debug" in sys.argv
+        
+        self.bind("<Map>", self._on_window_state_event)
+        self.bind("<Unmap>", self._on_window_state_event)
+        self.bind("<Configure>", self._on_root_configure)
 
         self._overlay_proc = None
         self._overlay_settings_window = None
@@ -142,19 +166,9 @@ class MainWindow(ctk.CTk):
         self.history_button.pack(pady=3, padx=10, fill="x")
         self.nav_buttons.append(self.history_button)
 
-        self.overlay_settings_btn = ctk.CTkButton(
-            self.sidebar,
-            text="[04]  HUD OVERLAY CONFIG" if is_cyber else "Overlay Settings",
-            command=self.show_overlay_settings,
-            fg_color=theme["nav_btn_fg"], hover_color=theme["nav_btn_hover"],
-            text_color=theme["nav_btn_text"], font=get_font(12, "bold"), height=36, anchor="w"
-        )
-        self.overlay_settings_btn.pack(pady=3, padx=10, fill="x")
-        self.nav_buttons.append(self.overlay_settings_btn)
-
         self.network_button = ctk.CTkButton(
             self.sidebar,
-            text="[05]  NETWORK STABILIZER" if is_cyber else "Network Stabilizer",
+            text="[04]  NETWORK STABILIZER" if is_cyber else "Network Stabilizer",
             command=self.show_network,
             fg_color=theme["nav_btn_fg"], hover_color=theme["nav_btn_hover"],
             text_color=theme["nav_btn_text"], font=get_font(12, "bold"), height=36, anchor="w"
@@ -164,7 +178,7 @@ class MainWindow(ctk.CTk):
 
         self.sentinel_button = ctk.CTkButton(
             self.sidebar,
-            text="[06]  UNIVERSAL SENTINEL" if is_cyber else "Universal Sentinel",
+            text="[05]  UNIVERSAL SENTINEL" if is_cyber else "Universal Sentinel",
             command=self.show_sentinel,
             fg_color=theme["nav_btn_fg"], hover_color=theme["nav_btn_hover"],
             text_color=theme["nav_btn_text"], font=get_font(12, "bold"), height=36, anchor="w"
@@ -224,7 +238,58 @@ class MainWindow(ctk.CTk):
         # Listen for global theme changes
         on_theme_changed(self._apply_theme_to_ui)
 
+        # Fix Windows minimization/restore flicker (opacity trick)
+        if pywinstyles is not None:
+            try:
+                pywinstyles.set_opacity(self, value=1.0)
+            except Exception:
+                pass
+
         self.protocol("WM_DELETE_WINDOW", self._close_app)
+
+    def _on_root_configure(self, event):
+        if event.widget != self:
+            return
+        if self._debug_mode:
+            self.debug_counters["configure_events"] += 1
+
+    def _on_window_state_event(self, event):
+        if event.widget != self:
+            return
+            
+        current_state = self.state()
+        if self._last_window_state == current_state:
+            return
+            
+        self._last_window_state = current_state
+        
+        if current_state == "iconic":
+            self._ui_suspended = True
+            if self._pending_restore_refresh is not None:
+                try:
+                    self.after_cancel(self._pending_restore_refresh)
+                except Exception:
+                    pass
+                self._pending_restore_refresh = None
+        elif current_state in ("normal", "zoomed"):
+            self._ui_suspended = False
+            if self._pending_restore_refresh is not None:
+                try:
+                    self.after_cancel(self._pending_restore_refresh)
+                except Exception:
+                    pass
+            self._pending_restore_refresh = self.after_idle(self._apply_deferred_ui_refresh)
+
+    def _apply_deferred_ui_refresh(self):
+        self._pending_restore_refresh = None
+        if self._debug_mode:
+            self.debug_counters["periodic_ui_refreshes"] += 1
+            
+        if self.current_view and hasattr(self.current_view, "refresh"):
+            try:
+                self.current_view.refresh()
+            except Exception:
+                pass
 
     def _on_cyber_toggle(self):
         enabled = bool(self.cyber_switch.get())
@@ -238,9 +303,8 @@ class MainWindow(ctk.CTk):
             self.scan_button: ("[01]  SYSTEM TELEMETRY" if is_cyber else "Scan Hardware"),
             self.optimize_button: ("[02]  GAME BOOSTER" if is_cyber else "Game Booster"),
             self.history_button: ("[03]  TELEMETRY LOGS" if is_cyber else "History"),
-            self.overlay_settings_btn: ("[04]  HUD OVERLAY CONFIG" if is_cyber else "Overlay Settings"),
-            self.network_button: ("[05]  NETWORK STABILIZER" if is_cyber else "Network Stabilizer"),
-            self.sentinel_button: ("[06]  UNIVERSAL SENTINEL" if is_cyber else "Universal Sentinel"),
+            self.network_button: ("[04]  NETWORK STABILIZER" if is_cyber else "Network Stabilizer"),
+            self.sentinel_button: ("[05]  UNIVERSAL SENTINEL" if is_cyber else "Universal Sentinel"),
         }
 
         for btn in self.nav_buttons:
@@ -278,6 +342,32 @@ class MainWindow(ctk.CTk):
                     )
 
     def _apply_theme_to_ui(self, is_cyber: bool):
+        if getattr(self, "_active_theme", None) == is_cyber:
+            return
+        self._active_theme = is_cyber
+
+        # Skip heavy apply_theme / layout when minimized
+        if self.state() == "iconic":
+            self._active_theme = None
+            return
+
+        # Opacity workaround for flicker
+        if pywinstyles is not None:
+            try:
+                pywinstyles.set_opacity(self, value=0.0)
+            except Exception:
+                pass
+
+        try:
+            self._apply_theme_to_ui_impl(is_cyber)
+        finally:
+            if pywinstyles is not None:
+                try:
+                    pywinstyles.set_opacity(self, value=1.0)
+                except Exception:
+                    pass
+
+    def _apply_theme_to_ui_impl(self, is_cyber: bool):
         theme = get_theme()
         self.configure(fg_color=theme["bg_root"])
         self.sidebar.configure(
@@ -413,24 +503,6 @@ class MainWindow(ctk.CTk):
         self._clear_main()
         self._set_active_nav_button(self.sentinel_button)
         self.current_view = SentinelView(self.main_frame, service=SentinelService.get_instance())
-        self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-
-    # ── Overlay settings popup ─────────────────────────────────
-
-    def show_overlay_settings(self):
-        self._clear_main()
-        self._set_active_nav_button(self.overlay_settings_btn)
-        self.current_view = OverlaySettingsView(
-            parent=self.main_frame,
-            initial_settings=self.overlay_settings,
-            on_apply=self.apply_overlay_settings
-        )
-        self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-
-    def show_network(self):
-        self._clear_main()
-        self._set_active_nav_button(self.network_button)
-        self.current_view = NetworkView(self.main_frame, on_back=self.show_optimize)
         self.current_view.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
     def apply_overlay_settings(self, settings: dict):
